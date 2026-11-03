@@ -1,0 +1,40 @@
+[package]
+name = "workspace-cloud"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.92"
+axum = "0.8.9"
+base64 = "0.23.1"
+calamine = "0.37"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+deadpool-postgres = "0.14.2"
+fastembed = "7.5.0"
+futures-util = "0.3.34"
+hmac = "0.13.0"
+jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
+libc = "0.2.191"
+pdf-extract = "0.12.1"
+quick-xml = "0.38"
+reqwest = { version = "0.13.5", default-features = false, features = ["form", "json", "query", "rustls"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync", "net", "signal", "time", "process", "io-util"] }
+tokio-postgres = { version = "0.7.18", features = ["with-uuid-1", "with-serde_json-1"] }
+tokio-postgres-rustls = "0.14.0"
+tower = { version = "0.5.3", features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.7.1", features = ["limit", "set-header", "timeout"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+uuid = { version = "1.29.0", features = ["v4", "serde"] }
+zip = { version = "6", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+base64 = "0.23.1"
+http-body-util = "0.1.5"

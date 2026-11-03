@@ -1,0 +1,45 @@
+{
+  "name": "private-ai-connector-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:dev:test": "PRIVATE_AI_CONNECTOR_WORKSPACE_PROVIDER=anthropic tauri dev",
+    "tauri:dev:cloud": "set -a && . ./backend/.env.devcloud && set +a && tauri dev",
+    "tauri:dev:cloud:test": "set -a && . ./backend/.env.devcloud && set +a && PRIVATE_AI_CONNECTOR_WORKSPACE_PROVIDER=anthropic tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@tauri-apps/cli": "^2.12.0",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^6.9.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "jsdom": "26.0.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.48.0",
+    "vite": "6.4.5",
+    "vitest": "4.1.12"
+  }
+}

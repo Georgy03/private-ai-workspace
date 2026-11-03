@@ -1,0 +1,27 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+.DS_Store
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+release/
+
+# OpenTofu / Terraform: state can contain secrets
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# Kept test data (plain-text copy of synced files). Never commit.
+backend/.dev-state/
+.dev-state/
+tmp/

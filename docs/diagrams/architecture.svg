@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="1262" viewBox="0 0 1640 1262" font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif"><defs><marker id="arrow" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#374151"/></marker><marker id="arrow-start" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#374151"/></marker></defs><rect width="1640" height="1262" fill="#ffffff"/><text x="40" y="48" font-size="26" font-weight="700" fill="#111827" text-anchor="start">Private AI Workspace: architecture</text>
+<text x="40" y="72.0" font-size="13" font-weight="400" fill="#6b7280" text-anchor="start">Where each part runs, what it does, and how far along it is. Your local files stay on your device. The firm cloud holds only text copied from sources the firm connects.</text>
+<text x="40" y="112" font-size="11" font-weight="700" fill="#6b7280" text-anchor="start">Status</text>
+<circle cx="92" cy="108" r="5" fill="#16a34a"/>
+<text x="102" y="112" font-size="11" font-weight="400" fill="#111827" text-anchor="start">Built and tested</text>
+<circle cx="235.2" cy="108" r="5" fill="#d97706"/>
+<text x="245.2" y="112" font-size="11" font-weight="400" fill="#111827" text-anchor="start">Written, not deployed</text>
+<circle cx="409.4" cy="108" r="5" fill="#9ca3af"/>
+<text x="419.4" y="112" font-size="11" font-weight="400" fill="#111827" text-anchor="start">Not built yet</text>
+<rect x="30" y="135" width="480" height="860" rx="16" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.4"/>
+<text x="48" y="161" font-size="12" font-weight="700" fill="#6b7280" text-anchor="start">YOUR DEVICE</text>
+<rect x="560" y="135" width="650" height="860" rx="16" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="1.4"/>
+<text x="578" y="161" font-size="12" font-weight="700" fill="#6b7280" text-anchor="start">FIRM CLOUD  (your AWS account)</text>
+<rect x="1260" y="135" width="350" height="860" rx="16" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.4"/>
+<text x="1278" y="161" font-size="12" font-weight="700" fill="#6b7280" text-anchor="start">OUTSIDE SERVICES</text>
+<rect x="60" y="179" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="199" r="5" fill="#16a34a"/>
+<text x="88" y="203" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Desktop app</text>
+<text x="74" y="221.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Ask, search, Sources and Connectors screens. Shows which passages</text>
+<text x="74" y="235.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">are local and which are cloud.</text>
+<rect x="60" y="299" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="319" r="5" fill="#16a34a"/>
+<text x="88" y="323" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Cloud client and merge</text>
+<text x="74" y="341.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Asks the firm cloud for matching passages, merges them with local</text>
+<text x="74" y="355.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">results and picks the best.</text>
+<rect x="60" y="419" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="439" r="5" fill="#16a34a"/>
+<text x="88" y="443" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Local search index</text>
+<text x="74" y="461.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Encrypted database of your local files&#x27; text. Never uploaded</text>
+<text x="74" y="475.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">anywhere.</text>
+<rect x="60" y="539" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="559" r="5" fill="#16a34a"/>
+<text x="88" y="563" font-size="13" font-weight="700" fill="#111827" text-anchor="start">File reader (separate process)</text>
+<text x="74" y="581.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Reads PDFs, Word, Excel and scans on this device. Scans use the</text>
+<text x="74" y="595.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">operating system&#x27;s OCR.</text>
+<rect x="60" y="659" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="679" r="5" fill="#16a34a"/>
+<text x="88" y="683" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Your folders and files</text>
+<text x="74" y="701.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Stay where they are. The app only reads the folders you approve.</text>
+<rect x="60" y="779" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="799" r="5" fill="#16a34a"/>
+<text x="88" y="803" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Operating-system credential store</text>
+<text x="74" y="821.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Holds the index encryption key and the sign-in tokens (Keychain</text>
+<text x="74" y="835.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">or Credential Manager).</text>
+<rect x="60" y="899" width="420" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="76" cy="919" r="5" fill="#16a34a"/>
+<text x="88" y="923" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Ask Claude</text>
+<text x="74" y="941.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Sends your question and the chosen passages straight to Bedrock.</text>
+<text x="74" y="955.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Uses your own AWS login for now.</text>
+<rect x="590" y="179" width="590" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="606" cy="199" r="5" fill="#16a34a"/>
+<text x="618" y="203" font-size="13" font-weight="700" fill="#111827" text-anchor="start">API</text>
+<text x="604" y="221.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Search, connectors list, connect, sync, disconnect. Checks every request&#x27;s sign-in and firm.</text>
+<rect x="590" y="299" width="590" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="606" cy="319" r="5" fill="#16a34a"/>
+<text x="618" y="323" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Database (PostgreSQL)</text>
+<text x="604" y="341.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Synced text, file names and who may read each file. Firms are kept apart by row-level security</text>
+<text x="604" y="355.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">inside the database. Planned on RDS.</text>
+<rect x="590" y="419" width="285" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="606" cy="439" r="5" fill="#16a34a"/>
+<text x="618" y="443" font-size="13" font-weight="700" fill="#111827" text-anchor="start">File reader (restricted process)</text>
+<text x="604" y="461.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Reads PDF, Word, Excel and PowerPoint</text>
+<text x="604" y="475.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">files. Empty environment, time and memory</text>
+<text x="604" y="490.7" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">limits.</text>
+<rect x="905" y="419" width="285" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="921" cy="439" r="5" fill="#16a34a"/>
+<text x="933" y="443" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Sync worker</text>
+<text x="919" y="461.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Pulls files and permissions from Google and</text>
+<text x="919" y="475.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Microsoft every few minutes. Resumes after</text>
+<text x="919" y="490.7" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">a crash.</text>
+<rect x="590" y="539" width="285" height="84" rx="10" fill="#fff" stroke="#d97706" stroke-width="1.6"/>
+<circle cx="606" cy="559" r="5" fill="#d97706"/>
+<text x="618" y="563" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Sign-in (Cognito)</text>
+<text x="604" y="581.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Required two-step sign-in. The firm ID is</text>
+<text x="604" y="595.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">set by us and users cannot change it.</text>
+<rect x="905" y="539" width="285" height="84" rx="10" fill="#fff" stroke="#9ca3af" stroke-width="1.6" stroke-dasharray="5 4"/>
+<circle cx="921" cy="559" r="5" fill="#9ca3af"/>
+<text x="933" y="563" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Secret store for tokens</text>
+<text x="919" y="581.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Holds each firm&#x27;s long-lived Google and</text>
+<text x="919" y="595.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Microsoft access. Developer machines use a</text>
+<text x="919" y="610.7" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">private file instead.</text>
+<rect x="590" y="659" width="285" height="84" rx="10" fill="#fff" stroke="#d97706" stroke-width="1.6"/>
+<circle cx="606" cy="679" r="5" fill="#d97706"/>
+<text x="618" y="683" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Encryption keys (KMS)</text>
+<text x="604" y="701.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">One key for the platform, one for audit</text>
+<text x="604" y="715.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">logs, one per firm for files and secrets.</text>
+<rect x="905" y="659" width="285" height="84" rx="10" fill="#fff" stroke="#d97706" stroke-width="1.6"/>
+<circle cx="921" cy="679" r="5" fill="#d97706"/>
+<text x="933" y="683" font-size="13" font-weight="700" fill="#111827" text-anchor="start">File storage (S3)</text>
+<text x="919" y="701.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Created but not used yet. Original files</text>
+<text x="919" y="715.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">are not kept.</text>
+<rect x="590" y="779" width="590" height="84" rx="10" fill="#fff" stroke="#d97706" stroke-width="1.6"/>
+<circle cx="606" cy="799" r="5" fill="#d97706"/>
+<text x="618" y="803" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Audit and alerts</text>
+<text x="604" y="821.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">CloudTrail records every file access, GuardDuty watches for threats, alerts go to email.</text>
+<rect x="590" y="899" width="590" height="84" rx="10" fill="#fff" stroke="#9ca3af" stroke-width="1.6" stroke-dasharray="5 4"/>
+<circle cx="606" cy="919" r="5" fill="#9ca3af"/>
+<text x="618" y="923" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Claude access broker</text>
+<text x="604" y="941.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Will give each app short-lived permission to call Claude directly, so firms need no AWS login</text>
+<text x="604" y="955.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">of their own.</text>
+<rect x="1290" y="179" width="290" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="1306" cy="199" r="5" fill="#16a34a"/>
+<text x="1318" y="203" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Google and Microsoft sign-in</text>
+<text x="1304" y="221.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Where an administrator approves read-only</text>
+<text x="1304" y="235.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">access. Passwords go only to them.</text>
+<rect x="1290" y="419" width="290" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="1306" cy="439" r="5" fill="#16a34a"/>
+<text x="1318" y="443" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Google Drive</text>
+<text x="1304" y="461.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Read-only access to files and sharing</text>
+<text x="1304" y="475.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">settings.</text>
+<rect x="1290" y="539" width="290" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="1306" cy="559" r="5" fill="#16a34a"/>
+<text x="1318" y="563" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Microsoft 365</text>
+<text x="1304" y="581.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">OneDrive and SharePoint through Microsoft</text>
+<text x="1304" y="595.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Graph. Read-only.</text>
+<rect x="1290" y="899" width="290" height="84" rx="10" fill="#fff" stroke="#16a34a" stroke-width="1.6"/>
+<circle cx="1306" cy="919" r="5" fill="#16a34a"/>
+<text x="1318" y="923" font-size="13" font-weight="700" fill="#111827" text-anchor="start">Amazon Bedrock: Claude</text>
+<text x="1304" y="941.0" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Answers questions. Zero data retention must</text>
+<text x="1304" y="955.85" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">be on before anything is sent.</text>
+<polyline points="480,331.0 540,331.0 540,221.0 590,221.0" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="540" cy="261.0" r="11" fill="#111827"/>
+<text x="540" y="265.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<polyline points="480,353.0 562,353.0 562,581.0 590,581.0" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="562" cy="541.0" r="11" fill="#111827"/>
+<text x="562" y="545.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<polyline points="270.0,983 270.0,1030 1435.0,1030 1435.0,983" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<circle cx="760" cy="1030" r="11" fill="#111827"/>
+<text x="760" y="1034" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<polyline points="1290,221.0 1180,221.0" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="1245" cy="207.0" r="11" fill="#111827"/>
+<text x="1245" y="211.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<polyline points="730,263 730,299" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="730" cy="281" r="11" fill="#111827"/>
+<text x="730" y="285" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<polyline points="1045,419 1045,383" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="1045" cy="401" r="11" fill="#111827"/>
+<text x="1045" y="405" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<polyline points="905,461.0 875,461.0" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="890.0" cy="445.0" r="11" fill="#111827"/>
+<text x="890.0" y="449.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+<polyline points="1045,503 1045,539" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="1045" cy="521" r="11" fill="#111827"/>
+<text x="1045" y="525" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+<polyline points="1190,461.0 1290,461.0" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<circle cx="1240" cy="447.0" r="11" fill="#111827"/>
+<text x="1240" y="451.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">9</text>
+<polyline points="1190,475.0 1240,475.0 1240,581.0 1290,581.0" fill="none" stroke="#374151" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<polyline points="1180,241 1200,241 1200,581.0 1190,581.0" fill="none" stroke="#7c3aed" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<circle cx="1200" cy="341.0" r="11" fill="#7c3aed"/>
+<text x="1200" y="345.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">10</text>
+<rect x="30" y="1054" width="1580" height="156" rx="12" fill="#fafafa" stroke="#d1d5db" stroke-width="1"/>
+<text x="48" y="1078" font-size="12" font-weight="700" fill="#111827" text-anchor="start">What the numbered arrows carry</text>
+<circle cx="59.0" cy="1098" r="11" fill="#111827"/>
+<text x="59.0" y="1102" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<text x="76.0" y="1102.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">Your question text goes to the firm cloud to be searched. Matching passages come</text>
+<text x="76.0" y="1115.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">back. Nothing from your local files goes up.</text>
+<circle cx="565.6666666666667" cy="1098" r="11" fill="#111827"/>
+<text x="565.6666666666667" y="1102" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<text x="582.6666666666667" y="1102.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">Sign-in to the firm&#x27;s account. The firm and your role come from the sign-in</text>
+<text x="582.6666666666667" y="1115.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">token, never from the app.</text>
+<circle cx="1072.3333333333335" cy="1098" r="11" fill="#111827"/>
+<text x="1072.3333333333335" y="1102" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<text x="1089.3333333333335" y="1102.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">The question and the best passages (local and cloud) go straight to Claude on</text>
+<text x="1089.3333333333335" y="1115.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">Bedrock. The firm cloud never sees this step.</text>
+<circle cx="59.0" cy="1128" r="11" fill="#111827"/>
+<text x="59.0" y="1132" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<text x="76.0" y="1132.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">An administrator approves access at Google or Microsoft. A one-time code comes</text>
+<text x="76.0" y="1145.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">back to the API, which swaps it for the long-lived token.</text>
+<circle cx="565.6666666666667" cy="1128" r="11" fill="#111827"/>
+<text x="565.6666666666667" y="1132" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<text x="582.6666666666667" y="1132.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">The API reads and writes synced text and permissions. Every query is limited to</text>
+<text x="582.6666666666667" y="1145.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">one firm by the database itself.</text>
+<circle cx="1072.3333333333335" cy="1128" r="11" fill="#111827"/>
+<text x="1072.3333333333335" y="1132" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<text x="1089.3333333333335" y="1132.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">The worker stores passages, names and permissions. It never stores the original</text>
+<text x="1089.3333333333335" y="1145.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">files.</text>
+<circle cx="59.0" cy="1158" r="11" fill="#111827"/>
+<text x="59.0" y="1162" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+<text x="76.0" y="1162.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">Each downloaded file is handed to a locked-down reader process and discarded;</text>
+<text x="76.0" y="1175.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">only extracted text comes back.</text>
+<circle cx="565.6666666666667" cy="1158" r="11" fill="#111827"/>
+<text x="565.6666666666667" y="1162" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+<text x="582.6666666666667" y="1162.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">The worker fetches the firm&#x27;s access token to read from Google and Microsoft.</text>
+<circle cx="1072.3333333333335" cy="1158" r="11" fill="#111827"/>
+<text x="1072.3333333333335" y="1162" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">9</text>
+<text x="1089.3333333333335" y="1162.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">Read-only file listing, sharing settings and downloads from the connected</text>
+<text x="1089.3333333333335" y="1175.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">sources.</text>
+<circle cx="59.0" cy="1188" r="11" fill="#111827"/>
+<text x="59.0" y="1192" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">10</text>
+<text x="76.0" y="1192.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">When a source is connected, the API saves its long-lived token in the secret</text>
+<text x="76.0" y="1205.125" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">store. The database never holds a token.</text>
+<text x="40" y="1248" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Status as of 2 November 2026. Nothing is deployed to AWS yet; the cloud side runs on a developer machine for testing.</text></svg>

@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="1670" viewBox="0 0 1640 1670" font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif"><defs><marker id="arrow" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#374151"/></marker><marker id="arrow-start" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#374151"/></marker></defs><rect width="1640" height="1670" fill="#ffffff"/><text x="40" y="48" font-size="26" font-weight="700" fill="#111827" text-anchor="start">Private AI Workspace: how your data moves</text>
+<text x="40" y="72.0" font-size="13" font-weight="400" fill="#6b7280" text-anchor="start">Two journeys: connecting a source and syncing it, then asking a question. Arrow colour shows what kind of data is moving. Local files never reach the firm cloud.</text>
+<text x="40" y="98" font-size="17" font-weight="700" fill="#111827" text-anchor="start">A.  Connecting a source and syncing its files</text>
+<rect x="5.0" y="112" width="388.0" height="668.5" rx="14" fill="#eff6ff" stroke="none" stroke-width="1"/>
+<text x="17.0" y="130" font-size="10.5" font-weight="700" fill="#6b7280" text-anchor="start">YOUR DEVICE</text>
+<rect x="401.0" y="112" width="784.0" height="668.5" rx="14" fill="#f5f3ff" stroke="none" stroke-width="1"/>
+<text x="413.0" y="130" font-size="10.5" font-weight="700" fill="#6b7280" text-anchor="start">FIRM CLOUD (AWS)</text>
+<rect x="1193.0" y="112" width="388.0" height="668.5" rx="14" fill="#f9fafb" stroke="none" stroke-width="1"/>
+<text x="1205.0" y="130" font-size="10.5" font-weight="700" fill="#6b7280" text-anchor="start">OUTSIDE SERVICES</text>
+<text x="100" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">You</text>
+<polyline points="100,166 100,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="298" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Desktop app</text>
+<polyline points="298,166 298,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="496" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Firm API</text>
+<polyline points="496,166 496,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="694" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Sync worker</text>
+<polyline points="694,166 694,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="892" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">File reader</text>
+<polyline points="892,166 892,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="1090" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Database and secrets</text>
+<polyline points="1090,166 1090,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="1288" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Google / Microsoft</text>
+<polyline points="1288,166 1288,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="1486" y="156" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Claude (Bedrock)</text>
+<polyline points="1486,166 1486,768.5" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<polyline points="100,219.0 298,219.0" fill="none" stroke="#7c3aed" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="110" y="195.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">Press Connect on Google Drive or Microsoft 365 (firm administrators</text>
+<text x="110" y="209.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">only).</text>
+<circle cx="83" cy="219.0" r="11" fill="#7c3aed"/>
+<text x="83" y="223.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<polyline points="298,282.0 496,282.0" fill="none" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="308" y="258.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">Ask the API to start. The sign-in token proves who you are and</text>
+<text x="308" y="272.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">which firm.</text>
+<circle cx="281" cy="282.0" r="11" fill="#dc2626"/>
+<text x="281" y="286.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<polyline points="496,345.0 298,345.0" fill="none" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="308" y="321.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">A signed sign-in link for the provider, valid for ten minutes. The</text>
+<text x="308" y="335.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">app opens it in your browser.</text>
+<circle cx="281" cy="345.0" r="11" fill="#dc2626"/>
+<text x="281" y="349.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<polyline points="100,394.5 1288,394.5" fill="none" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="694.0" y="384.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">You approve read-only access on Google&#x27;s or Microsoft&#x27;s own page. Your password goes only to them.</text>
+<circle cx="83" cy="394.5" r="11" fill="#dc2626"/>
+<text x="83" y="398.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<polyline points="1288,444.0 496,444.0" fill="none" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="892.0" y="434.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">A one-time code returns to the API, which swaps it for a long-lived access token.</text>
+<circle cx="479" cy="444.0" r="11" fill="#dc2626"/>
+<text x="479" y="448.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<polyline points="496,493.5 1090,493.5" fill="none" stroke="#dc2626" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="793.0" y="483.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">The token goes to the secret store. The connection row in the database holds no token.</text>
+<circle cx="479" cy="493.5" r="11" fill="#dc2626"/>
+<text x="479" y="497.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<polyline points="694,543.0 1288,543.0" fill="none" stroke="#7c3aed" stroke-width="2.4" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<text x="991.0" y="533.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">Every few minutes the worker lists changes: file names and who may read each file.</text>
+<circle cx="677" cy="543.0" r="11" fill="#7c3aed"/>
+<text x="677" y="547.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+<polyline points="694,592.5 1288,592.5" fill="none" stroke="#ea580c" stroke-width="2.4" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<text x="991.0" y="582.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">It downloads each new or changed file (up to 50 MB).</text>
+<circle cx="677" cy="592.5" r="11" fill="#ea580c"/>
+<text x="677" y="596.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+<polyline points="694,655.5 892,655.5" fill="none" stroke="#ea580c" stroke-width="2.4" marker-end="url(#arrow)" marker-start="url(#arrow-start)" stroke-linejoin="round"/>
+<text x="704" y="632.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">The reader extracts text in a locked-down process, and the file is</text>
+<text x="704" y="645.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">then discarded.</text>
+<circle cx="677" cy="655.5" r="11" fill="#ea580c"/>
+<text x="677" y="659.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">9</text>
+<polyline points="694,718.5 1090,718.5" fill="none" stroke="#059669" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="704" y="695.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">Passages, file names and permissions are stored. The original files</text>
+<text x="704" y="708.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">are not.</text>
+<circle cx="677" cy="718.5" r="11" fill="#059669"/>
+<text x="677" y="722.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">10</text>
+<text x="40" y="834.5" font-size="17" font-weight="700" fill="#111827" text-anchor="start">B.  Asking a question</text>
+<rect x="5.0" y="848.5" width="388.0" height="611.5" rx="14" fill="#eff6ff" stroke="none" stroke-width="1"/>
+<text x="17.0" y="866.5" font-size="10.5" font-weight="700" fill="#6b7280" text-anchor="start">YOUR DEVICE</text>
+<rect x="401.0" y="848.5" width="784.0" height="611.5" rx="14" fill="#f5f3ff" stroke="none" stroke-width="1"/>
+<text x="413.0" y="866.5" font-size="10.5" font-weight="700" fill="#6b7280" text-anchor="start">FIRM CLOUD (AWS)</text>
+<rect x="1193.0" y="848.5" width="388.0" height="611.5" rx="14" fill="#f9fafb" stroke="none" stroke-width="1"/>
+<text x="1205.0" y="866.5" font-size="10.5" font-weight="700" fill="#6b7280" text-anchor="start">OUTSIDE SERVICES</text>
+<text x="100" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">You</text>
+<polyline points="100,902.5 100,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="298" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Desktop app</text>
+<polyline points="298,902.5 298,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="496" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Firm API</text>
+<polyline points="496,902.5 496,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="694" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Sync worker</text>
+<polyline points="694,902.5 694,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="892" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">File reader</text>
+<polyline points="892,902.5 892,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="1090" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Database and secrets</text>
+<polyline points="1090,902.5 1090,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="1288" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Google / Microsoft</text>
+<polyline points="1288,902.5 1288,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<text x="1486" y="892.5" font-size="12" font-weight="700" fill="#111827" text-anchor="middle">Claude (Bedrock)</text>
+<polyline points="1486,902.5 1486,1448.0" fill="none" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="3 4" stroke-linejoin="round"/>
+<polyline points="100,942.0 298,942.0" fill="none" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="110" y="932.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">You type a question.</text>
+<circle cx="83" cy="942.0" r="11" fill="#2563eb"/>
+<text x="83" y="946.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<rect x="308" y="970.0" width="250" height="34" rx="8" fill="#fff" stroke="#059669" stroke-width="1.8"/>
+<text x="318" y="985.0" font-size="10.5" font-weight="400" fill="#1f2937" text-anchor="start">Search your local index. Stays on this</text>
+<text x="318" y="997.5" font-size="10.5" font-weight="400" fill="#1f2937" text-anchor="start">device.</text>
+<circle cx="281" cy="987.0" r="11" fill="#059669"/>
+<text x="281" y="991.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<polyline points="298,1071.0 496,1071.0" fill="none" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="308" y="1047.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">The question text goes to the firm cloud over HTTPS. Local files do</text>
+<text x="308" y="1061.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">not.</text>
+<circle cx="281" cy="1071.0" r="11" fill="#2563eb"/>
+<text x="281" y="1075.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<polyline points="496,1120.5 1090,1120.5" fill="none" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="793.0" y="1110.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">Search the database, limited to the files you may read in Google or Microsoft.</text>
+<circle cx="479" cy="1120.5" r="11" fill="#2563eb"/>
+<text x="479" y="1124.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<polyline points="1090,1170.0 298,1170.0" fill="none" stroke="#059669" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="694.0" y="1160.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">Matching passages and file names come back. The server logs only counts, never your question.</text>
+<circle cx="281" cy="1170.0" r="11" fill="#059669"/>
+<text x="281" y="1174.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<rect x="308" y="1198.0" width="250" height="34" rx="8" fill="#fff" stroke="#059669" stroke-width="1.8"/>
+<text x="318" y="1213.0" font-size="10.5" font-weight="400" fill="#1f2937" text-anchor="start">Merge local and cloud results. Keep the</text>
+<text x="318" y="1225.5" font-size="10.5" font-weight="400" fill="#1f2937" text-anchor="start">best ~8.</text>
+<circle cx="281" cy="1215.0" r="11" fill="#059669"/>
+<text x="281" y="1219.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<polyline points="298,1285.5 1486,1285.5" fill="none" stroke="#059669" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="892.0" y="1275.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">The question plus the chosen passages go straight to Claude. Zero data retention must be on first.</text>
+<circle cx="281" cy="1285.5" r="11" fill="#059669"/>
+<text x="281" y="1289.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">7</text>
+<polyline points="1486,1335.0 298,1335.0" fill="none" stroke="#059669" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="892.0" y="1325.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="middle">The answer comes back.</text>
+<circle cx="281" cy="1335.0" r="11" fill="#059669"/>
+<text x="281" y="1339.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">8</text>
+<polyline points="298,1398.0 100,1398.0" fill="none" stroke="#6b7280" stroke-width="2.4" marker-end="url(#arrow)" stroke-linejoin="round"/>
+<text x="110" y="1374.5" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">You see the answer with citations and a privacy receipt: what was</text>
+<text x="110" y="1388.0" font-size="11" font-weight="400" fill="#1f2937" text-anchor="start">sent, to whom, and how many passages.</text>
+<circle cx="83" cy="1398.0" r="11" fill="#6b7280"/>
+<text x="83" y="1402.0" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">9</text>
+<rect x="30" y="1498.0" width="1580" height="128" rx="12" fill="#fafafa" stroke="#d1d5db" stroke-width="1"/>
+<text x="48" y="1520.0" font-size="12" font-weight="700" fill="#111827" text-anchor="start">Kinds of data</text>
+<polyline points="48,1542.0 82,1542.0" fill="none" stroke="#2563eb" stroke-width="3" stroke-linejoin="round"/>
+<text x="92" y="1546.0" font-size="11.5" font-weight="400" fill="#111827" text-anchor="start">Question text</text>
+<polyline points="568,1542.0 602,1542.0" fill="none" stroke="#059669" stroke-width="3" stroke-linejoin="round"/>
+<text x="612" y="1546.0" font-size="11.5" font-weight="400" fill="#111827" text-anchor="start">Passages of file text</text>
+<polyline points="1088,1542.0 1122,1542.0" fill="none" stroke="#ea580c" stroke-width="3" stroke-linejoin="round"/>
+<text x="1132" y="1546.0" font-size="11.5" font-weight="400" fill="#111827" text-anchor="start">File contents (passing through, not kept)</text>
+<polyline points="48,1566.0 82,1566.0" fill="none" stroke="#dc2626" stroke-width="3" stroke-linejoin="round"/>
+<text x="92" y="1570.0" font-size="11.5" font-weight="400" fill="#111827" text-anchor="start">Sign-in and access tokens</text>
+<polyline points="568,1566.0 602,1566.0" fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+<text x="612" y="1570.0" font-size="11.5" font-weight="400" fill="#111827" text-anchor="start">File names and who may read them</text>
+<polyline points="1088,1566.0 1122,1566.0" fill="none" stroke="#6b7280" stroke-width="3" stroke-linejoin="round"/>
+<text x="1132" y="1570.0" font-size="11.5" font-weight="400" fill="#111827" text-anchor="start">Audit records (who, what, counts only)</text>
+<text x="48" y="1600.0" font-size="10.5" font-weight="400" fill="#374151" text-anchor="start">Not shown: the firm cloud never calls Claude and never sees local passages. Today the app calls Claude with your own AWS login; a broker that hands out short-lived permission is planned. Audit records (who searched, how many results) are kept; question text is not.</text>
+<text x="40" y="1656" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Status as of 2 November 2026. Nothing is deployed to AWS yet; the cloud side runs on a developer machine for testing.</text></svg>

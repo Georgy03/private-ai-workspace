@@ -1,0 +1,1 @@
+{"main-capability":{"identifier":"main-capability","description":"Minimum permissions for the Private AI Connector Workspace desktop window","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}

@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="746" viewBox="0 0 1640 746" font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif"><defs><marker id="arrow" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#374151"/></marker><marker id="arrow-start" markerUnits="userSpaceOnUse" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M10,0 L0,5 L10,10 z" fill="#374151"/></marker></defs><rect width="1640" height="746" fill="#ffffff"/><text x="40" y="48" font-size="26" font-weight="700" fill="#111827" text-anchor="start">Private AI Workspace: where your data lives</text>
+<text x="40" y="72.0" font-size="13" font-weight="400" fill="#6b7280" text-anchor="start">Every kind of user data, where it is kept, who can read it and how it is removed. Coloured dots show how far along each part is.</text>
+<text x="40" y="112" font-size="11" font-weight="700" fill="#6b7280" text-anchor="start">Status</text>
+<circle cx="92" cy="108" r="5" fill="#16a34a"/>
+<text x="102" y="112" font-size="11" font-weight="400" fill="#111827" text-anchor="start">Built and tested</text>
+<circle cx="235.2" cy="108" r="5" fill="#d97706"/>
+<text x="245.2" y="112" font-size="11" font-weight="400" fill="#111827" text-anchor="start">Written, not deployed</text>
+<circle cx="409.4" cy="108" r="5" fill="#9ca3af"/>
+<text x="419.4" y="112" font-size="11" font-weight="400" fill="#111827" text-anchor="start">Not built yet</text>
+<rect x="30" y="138" width="1580" height="30" rx="8" fill="#111827" stroke="none" stroke-width="1"/>
+<text x="54" y="158" font-size="12" font-weight="700" fill="#fff" text-anchor="start">Data</text>
+<text x="444" y="158" font-size="12" font-weight="700" fill="#fff" text-anchor="start">Where it lives</text>
+<text x="974" y="158" font-size="12" font-weight="700" fill="#fff" text-anchor="start">Who can read it, and how it is removed</text>
+<rect x="30" y="174" width="1580" height="33.525" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="192" r="5" fill="#16a34a"/>
+<text x="60" y="194.0" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Your local files</text>
+<text x="444" y="194.0" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">On your device, where you keep them</text>
+<text x="974" y="194.0" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Not copied. Only the folders you approve are read.</text>
+<rect x="30" y="211.525" width="1580" height="49.05" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="229.525" r="5" fill="#16a34a"/>
+<text x="60" y="231.525" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Text and index of your local files</text>
+<text x="444" y="231.525" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Encrypted database on your device. Key in the operating-system credential</text>
+<text x="444" y="247.05" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">store.</text>
+<text x="974" y="231.525" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Never uploaded to the firm cloud. Deleted from Settings &gt; Clear local workspace.</text>
+<rect x="30" y="264.575" width="1580" height="49.05" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="282.575" r="5" fill="#d97706"/>
+<text x="60" y="284.575" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Text of connected files (Google, Microsoft)</text>
+<text x="444" y="284.575" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Firm cloud database, as plain text columns, in a shared database separated per</text>
+<text x="444" y="300.09999999999997" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">firm by row-level security. Disk encryption with an AWS key.</text>
+<text x="974" y="284.575" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Anyone with database access can read it. Deleted when the connector is removed; backups</text>
+<text x="974" y="300.09999999999997" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">may keep it up to 14 days.</text>
+<rect x="30" y="317.625" width="1580" height="33.525" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="335.625" r="5" fill="#16a34a"/>
+<text x="60" y="337.625" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Original connected files</text>
+<text x="444" y="337.625" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Not stored anywhere</text>
+<text x="974" y="337.625" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Downloaded, read for text, then discarded.</text>
+<rect x="30" y="355.15" width="1580" height="49.05" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="373.15" r="5" fill="#16a34a"/>
+<text x="60" y="375.15" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Who may read each connected file</text>
+<text x="444" y="375.15" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Firm cloud database, as email, domain and group identities</text>
+<text x="974" y="375.15" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Refreshed with every sync and in full every six hours. Files whose permissions are</text>
+<text x="974" y="390.67499999999995" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">unknown are hidden from everyone.</text>
+<rect x="30" y="408.2" width="1580" height="49.05" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="426.2" r="5" fill="#9ca3af"/>
+<text x="60" y="428.2" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Google and Microsoft access tokens</text>
+<text x="444" y="428.2" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Planned: AWS Secrets Manager. Developer machines: a private file readable only</text>
+<text x="444" y="443.72499999999997" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">by you.</text>
+<text x="974" y="428.2" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Read-only access. Deleted when the connector is removed. A person can also withdraw it at</text>
+<text x="974" y="443.72499999999997" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Google or Microsoft.</text>
+<rect x="30" y="461.25" width="1580" height="49.05" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="479.25" r="5" fill="#d97706"/>
+<text x="60" y="481.25" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Your sign-in</text>
+<text x="444" y="481.25" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Cognito (written, not deployed). The app keeps its tokens in the credential</text>
+<text x="444" y="496.775" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">store.</text>
+<text x="974" y="481.25" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Two-step sign-in required. Tokens expire and refresh.</text>
+<rect x="30" y="514.3" width="1580" height="49.05" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="532.3" r="5" fill="#16a34a"/>
+<text x="60" y="534.3" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Your question text</text>
+<text x="444" y="534.3" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Typed in the app. Sent to the firm cloud to search it, and to Claude with the</text>
+<text x="444" y="549.8249999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">chosen passages.</text>
+<text x="974" y="534.3" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">The firm cloud does not store it (it logs only the length). The question history in the</text>
+<text x="974" y="549.8249999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">window is in memory and is lost when the app closes.</text>
+<rect x="30" y="567.3499999999999" width="1580" height="64.575" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="585.3499999999999" r="5" fill="#16a34a"/>
+<text x="60" y="587.3499999999999" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Passages sent to Claude</text>
+<text x="444" y="587.3499999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Amazon Bedrock</text>
+<text x="974" y="587.3499999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Sent only after zero data retention is confirmed on the AWS account. The firm cloud does</text>
+<text x="974" y="602.8749999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">not see this step. The direct Claude API test mode has no such check and is for test</text>
+<text x="974" y="618.3999999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">documents only.</text>
+<rect x="30" y="635.925" width="1580" height="33.525" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="653.925" r="5" fill="#16a34a"/>
+<text x="60" y="655.925" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Privacy receipts</text>
+<text x="444" y="655.925" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Your device (encrypted database)</text>
+<text x="974" y="655.925" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Each records what was sent, to whom, and how many passages came from local and cloud.</text>
+<rect x="30" y="673.4499999999999" width="1580" height="33.525" rx="8" fill="#fff" stroke="#d1d5db" stroke-width="1"/>
+<circle cx="46" cy="691.4499999999999" r="5" fill="#d97706"/>
+<text x="60" y="693.4499999999999" font-size="11.5" font-weight="700" fill="#111827" text-anchor="start">Audit records</text>
+<text x="444" y="693.4499999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Firm cloud database and AWS CloudTrail</text>
+<text x="974" y="693.4499999999999" font-size="11.5" font-weight="400" fill="#374151" text-anchor="start">Who searched or changed a connection, and counts. Never question or file text.</text>
+<text x="40" y="732" font-size="11" font-weight="400" fill="#6b7280" text-anchor="start">Status as of 2 November 2026. Nothing is deployed to AWS yet; the cloud side runs on a developer machine for testing.</text></svg>
