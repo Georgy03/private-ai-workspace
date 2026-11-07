@@ -1,4 +1,5 @@
-# Platform key: database, secrets and the shared data bucket's default encryption.
+# Platform key: the database, its admin password and the shared data bucket's default encryption.
+# Connector tokens are not under this key: each firm's own key (made by the provisioner) protects them.
 # Each firm's own key is created at runtime by the provisioner (see iam.tf), not here.
 data "aws_iam_policy_document" "platform_key" {
   statement {

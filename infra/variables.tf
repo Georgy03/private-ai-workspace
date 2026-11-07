@@ -35,9 +35,9 @@ variable "vpc_cidr" {
 }
 
 variable "interface_endpoints" {
-  description = "AWS services reached privately from inside the VPC. Each costs a few dollars a month per zone."
+  description = "AWS services reached privately from inside the VPC. Each costs a few dollars a month per zone. Connector tokens only need KMS."
   type        = set(string)
-  default     = ["kms", "secretsmanager"]
+  default     = ["kms"]
 }
 
 variable "postgres_version" {

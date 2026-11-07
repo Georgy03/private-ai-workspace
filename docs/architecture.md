@@ -41,7 +41,7 @@ Key property: **the cloud never receives local text.** The app asks the cloud fo
 **Data plane (shared servers, separate data per firm):**
 - Postgres (RDS) with pgvector. Shared tables with a firm ID on every row and **forced row-level security as the primary lock**: the database itself hides every row that doesn't belong to the firm the transaction was opened for. The firm is set by the server from the verified token, never taken from the client, and it lasts only for that transaction.
 - S3 for original and extracted files, one prefix per firm, encrypted with a **per-firm KMS key**. Bucket policy denies any access whose encryption context names another firm.
-- Secrets Manager for connector refresh tokens, one secret per firm and connector, readable only by that firm's role.
+- Connector refresh tokens in the database table `connector_secrets`, encrypted with a one-time data key that each firm's own KMS key protects (envelope encryption, with the firm and secret name as encryption context); see `backend/README.md`, "Connector tokens in production".
 
 **Sync workers (ECS Fargate):** run connectors, parse files, chunk, embed, write to the firm's schema. They hold no inbound ports. Parsing runs in a sandbox with no network.
 
@@ -57,7 +57,7 @@ Key property: **the cloud never receives local text.** The app asks the cloud fo
 2. Every table has a firm ID, and row-level security rejects rows from other firms even if a query forgets the filter.
 3. Each firm has its own KMS key. Key policy requires the firm ID in the encryption context.
 4. Database roles are per job, not per firm: `app_api` (read-only search), `app_worker` (writes synced data) and `app_provisioner` (creates and deletes firms, sees no firm data). None can log in directly, bypass row security, or own a table. An earlier draft had a role per firm; it added operational weight without stopping anything row-level security doesn't already stop.
-5. S3 and Secrets Manager access is limited by firm tags on the role session.
+5. S3 access is limited by firm tags on the role session. Connector tokens are protected by each firm's own KMS key, with the firm and secret name checked on every use.
 6. Logs never contain document text, queries or tokens. Only IDs and counts.
 7. A cross-firm test suite runs in CI: sign in as firm A, try every endpoint for firm B's data, expect denial.
 8. Offboarding a firm deletes its schema, its S3 prefix and its secrets, then schedules its key for deletion.
@@ -151,7 +151,7 @@ One-time or yearly costs that are easy to underestimate: SOC 2 tooling and audit
 
 - File reading: `src/extract.rs` (PDF with a text layer, Word, PowerPoint, Excel; labelled by page, slide or sheet; bounded and hostile-file safe), `src/extract_process.rs` and `src/bin/workspace-extract.rs` (the restricted reader program and the code that runs it), and the sync changes that read each downloaded file, store passage labels, and read old files again when the reader improves. About 25 more tests, including real runs of the reader program with hung, flooding, crashing and damaged cases.
 
-Not built yet: OCR for scanned pages and photos, old .doc/.ppt files, network and file-system isolation for the reader (deployment must provide it), the AWS Secrets Manager store for connector tokens (nothing can be saved outside development without it), group-membership resolution, per-user rate limits, a container image and the services that run it, database login through IAM, embeddings and reranking, the Bedrock credential broker, and the desktop client changes. Vector search needs the pgvector extension, which isn't installed on this Mac; RDS and Aurora provide it.
+Not built yet: OCR for scanned pages and photos, old .doc/.ppt files, network and file-system isolation for the reader (deployment must provide it), the production token store has been built (encrypted rows under per-firm KMS keys) but has only run against a stand-in for KMS, not a real AWS account, group-membership resolution, per-user rate limits, a container image and the services that run it, database login through IAM, embeddings and reranking, the Bedrock credential broker, and the desktop client changes. Vector search needs the pgvector extension, which isn't installed on this Mac; RDS and Aurora provide it.
 
 ## 14. Solo users
 
@@ -230,7 +230,7 @@ Whole-document summaries are the cost risk: one can send up to about 375,000 tok
 
 ## 22. Known gaps
 
-Not built: OCR for handwriting and languages other than English (OCR itself is built, section 25); old .doc and .ppt files; reader isolation from network and file system (the deployment must provide it); the AWS Secrets Manager store for connector tokens; group-membership resolution; per-user rate limits; the container image and services to run it; IAM database login; embeddings and reranking; the Bedrock credential broker; a deployed Cognito; self-service sign-up and billing. Claude Sonnet 5.5 access on the AWS account returned an access error (HTTP 403), so development uses the direct Claude API in test mode, which has no zero data retention; do not use real client documents in that mode. Connector client secrets and API keys were pasted into chat during development and should be rotated before any real use.
+Not built: OCR for handwriting and languages other than English (OCR itself is built, section 25); old .doc and .ppt files; reader isolation from network and file system (the deployment must provide it); the production token store has only run against a stand-in for KMS, not a real AWS account; group-membership resolution; per-user rate limits; the container image and services to run it; IAM database login; embeddings and reranking; the Bedrock credential broker; a deployed Cognito; self-service sign-up and billing. Claude Sonnet 5.5 access on the AWS account returned an access error (HTTP 403), so development uses the direct Claude API in test mode, which has no zero data retention; do not use real client documents in that mode. Connector client secrets and API keys were pasted into chat during development and should be rotated before any real use.
 
 ## 23. Test status
 
@@ -295,3 +295,76 @@ An agent is a saved, versioned configuration that a firm administrator creates a
 **Versions.** Changing the instructions, tools, model or effort saves a new version; a task keeps the version it started on. Going back saves a copy of the old version as the newest, so history only grows.
 
 **Not built yet:** agents handing work to each other, human approval steps, spreadsheet and calculation tools, actions that change anything (sending, writing), shared agent memory, and evaluations. The agents John-style template is created by an administrator from the Agents screen; Alex, Taylor and Casey are shown there as planned only. Running agents needs `ANTHROPIC_API_KEY` on the server.
+
+## 29. Keeping and deleting agent work
+
+**Retention.** A finished task's report and the conversation behind it are kept for the firm's retention period: 90 days by default, chosen by an administrator from 30 days, 90 days, 180 days, 1 year, or "until their owners delete them". A background job deletes what is due. Deleting removes the conversation, the activity history, the request, the report, the edited version and the list of files used; what remains is the date and the cost, so budgets and allowances still add up. The deletion is recorded in the audit log as an ID.
+
+**Asking first.** A week before a report is deleted, its owner (only the owner) is asked in a pop-up whether to keep it. "Keep it" keeps it until they delete it; "Let it be deleted" stops the asking and it is deleted on its date; "Ask me later" closes the box and it returns the next time the app opens. Owners can also delete a report at any time. Changing the firm's period never deletes anything without at least a week's notice.
+
+**Reusing a conversation safely.** Each stored tool result records which files its text came from. Before a stored conversation is shown to the model again, text from any file the owner can no longer open is replaced with a notice.
+
+**What others see.** Anyone other than the owner, administrators included, sees that a task happened, when, which agent and what it cost, with a neutral title and a history that says only "Used a tool". File names and the start of the request, which the title used to show, are private to the owner.
+
+**Audit.** The worker now records agent task completions and failures (with the IDs of the files used), scheduled runs, skips and pauses, deletions, and cancellations, never any content.
+
+**Production guard.** The server sends document text straight to the Claude API (no zero data retention) only when `ALLOW_INSECURE=1`, which is for local development. Otherwise agents and company knowledge stay off until the server can use Amazon Bedrock with zero data retention, which it cannot yet.
+
+## 30. Dropbox and DocuSign connectors
+
+Both are read-only and follow the same rules as Google Drive and Microsoft 365: files stay on the provider, the firm's index holds text and permissions, and a person finds only what the provider says they may open.
+
+**Dropbox.** Reads the connecting account's files, shared folders and, for a business account, the team space. The first sync lists everything; later syncs follow Dropbox's change cursor, and a cursor Dropbox forgets triggers a full re-listing. Files are identified by lower-cased path because that is all Dropbox says about a deleted file, and a deleted folder (reported once) removes everything inside it. Permissions come from Dropbox's own sharing lists: the people and invited email addresses a file or its shared folder was shared with. A file that is not shared is readable only by the connecting account. Files shared only with a Dropbox group are not shown to the group's members, because Dropbox does not say who is in a group without a team-admin permission; this shows too little rather than too much. Public links are never access. Scopes: `files.metadata.read`, `files.content.read`, `sharing.read`, `account_info.read`, with offline access so the refresh token lasts.
+
+**DocuSign.** Each envelope becomes two searchable items: its documents combined into one PDF, and a short text summary of its status (who sent it, who has signed, who is still outstanding), so "what is waiting for a signature?" can be answered. Readable by the sender and everyone the envelope was sent to, by email address, plus the connecting account. Later syncs list only envelopes whose status changed since the previous sync began (less a day, for safety); an unchanged envelope is recognised by its version and not downloaded again. DocuSign has no read-only scope for envelopes, only `signature`, which also allows sending; this server only ever reads, but the token itself is broader than we would like. DocuSign requires the client in a Basic authorization header and replaces refresh tokens as they are used, so the worker saves the replacement at the end of each sync. The API address DocuSign reports for the account is only accepted if it is one of DocuSign's own (`*.docusign.net`), since the access token is sent there.
+
+**Setting them up.** Register an app with each provider and put its credentials in the server's environment (for local development, `backend/.env.local`): `DROPBOX_CLIENT_ID` and `DROPBOX_CLIENT_SECRET`; `DOCUSIGN_CLIENT_ID` (the integration key) and `DOCUSIGN_CLIENT_SECRET`, with `DOCUSIGN_ENVIRONMENT=production` for the real service (the default is DocuSign's developer sandbox). Each app must list the server's `OAUTH_REDIRECT_URI` as a redirect address. DocuSign requires a "go-live" review before an integration key works against real accounts.
+
+**Not verified against the real services.** Both connectors were built from the providers' documentation and tested against stand-in servers that follow it. Details I could not confirm (for example whether a DocuSign list call covers other users' envelopes for an account administrator) need a first run against a real developer account.
+
+## 31. Who a connected source is for: only me, or the entire workspace
+
+Each connection has a scope, chosen before signing in to the provider.
+
+- **Only me (private).** Only the person who connected it can find any of its files, whatever the provider says about sharing. Any employee may connect a source this way, and nobody else, an administrator included, can see, search, list, sync or remove it; to them it does not exist.
+- **Entire workspace.** Everyone at the firm can search it, and each person finds only the files the provider says they may open (how connections have always worked). Only an administrator may connect for the whole workspace.
+
+**How it is enforced.** Every search, document read, agent task and report decides who may see a file from one list stored with the file. A private connection records only its owner on every file it syncs, so every feature respects it with no special cases. The sync checks the setting at the moment it writes each file and holds it still until it has committed, so switching a connection to private cannot be missed by a sync in progress.
+
+**Changing it later.** Only the person who connected a source can change its scope, and only an administrator can open it to the workspace. Going private takes effect at once, in the same moment as the change, across every file already stored. Going to the workspace leaves files owner-only until the sync, which starts immediately as a full re-listing, restores each file's real sharing; nothing is exposed before then.
+
+**Company knowledge.** Files in a private connection are never read for company knowledge, and are left out of its counts, profile and lists. If a connection becomes private after its files were analysed, what was learned from them is removed: unconfirmed suggestions disappear, and confirmed facts are kept but marked outdated.
+
+**Also fixed here.** The desktop app only recognised Google and Microsoft sign-in pages and document links, so connecting Dropbox or DocuSign, or opening their files, would have been refused. It now recognises theirs, and only theirs.
+
+## 32. Emails and meetings prepared by agents (no mailbox or calendar access)
+
+An agent can prepare an email or a meeting for a person. It can never send or book anything itself. By default nothing is requested from Google or Microsoft, so there is nothing for a company's administrator to approve; a person can send a prepared email from the app only if they connect their own Outlook for that (section 33).
+
+**How it works.** An agent that has been given the "prepare emails" or "prepare meetings" tool proposes an item with the exact recipients, subject and message (or title, local times, invitees and notes). The proposal is stored for the person the task ran for and appears in their "Prepared for you" list. They read it, may edit any part, and choose where to open it: Gmail, Outlook or their mail app for an email; Google Calendar, Outlook Calendar or a calendar file for a meeting. Choosing one approves it and opens their own mail or calendar with everything filled in, and they press Send or Save themselves. A message too long for a link opens with the recipients and subject filled in and the text copied for pasting.
+
+**Safeguards.**
+- *Approval is the person's, only.* Nobody else, an administrator included, can see, approve or dismiss a proposal. Each is decided once.
+- *The agent cannot reach outside.* Only the agent's worker can create a proposal; the service people use cannot. One task may prepare at most five. Text inside documents is never treated as a request: the agent is told to prepare something only when the person's request asks for it.
+- *Addresses are strict.* Email addresses must be plain addresses, so nothing can add a header or a second recipient. Meetings need real times that run forwards for no more than 14 hours.
+- *Look twice.* Recipients outside the person's own email domain are called out on the card.
+- *The desktop app opens only what it should.* It opens only the compose and new-event pages of Gmail, Outlook and Google Calendar, or a plain `mailto:` link limited to recipients, cc, subject and body. A calendar file is made by the app, escaped so its text cannot add fields, checked, and written under a fixed name.
+- *Audit and retention.* The audit log records that something was prepared, approved or dismissed, with its kind and task, never its text. Proposals are deleted with the report they came from.
+
+**Later.** Real access to a mailbox or calendar (creating drafts or events directly, reading availability) needs per-person sign-in, administrator approval at most companies, and Google and Microsoft app verification. This feature is the approval step those would reuse.
+
+## 33. Sending a prepared email from the app (Outlook)
+
+A person can connect their own Outlook so that the draft an agent prepared can be sent from the app with one **Send** press, after reading it. It is the first thing this server does that leaves the firm, so it is opt-in at three levels and tightly limited.
+
+**Connecting.** "Outlook email" is a connection of its own, for one person only (never the workspace), signed in with Microsoft's `Mail.Send` permission and no other mail permission: it can send as the person and cannot read, list or delete anything in the mailbox. It has no files and is never synced. The address it sends from is shown. The Microsoft app registration needs the delegated `Mail.Send` permission added; at companies that restrict app consent, an administrator has to approve it.
+
+**Three switches, all required to send.** (1) An administrator turns on "let people send the emails their helpers prepare, from the app" for the firm: it is off until they do. (2) The person has connected their own Outlook. (3) The person presses Send on a specific draft.
+
+**What is sent.** Exactly the text on the card, including any edits the person made, as plain text, saved in their own Sent Items. The server sends only an email the person has been shown: the agent cannot trigger a send, and the send call accepts only the person's own proposal.
+
+**Safeguards.** Each email is sent at most once, even if Send is pressed twice at once; if Outlook refuses or cannot be reached, nothing counts as sent and the draft stays waiting. A lapsed sign-in marks the connection "needs reconnecting" instead of failing silently. At most 20 emails a day per person. If any recipient is outside the person's own email domain, they must tick that they have checked them first, and the server enforces this, not just the screen. Only the person the draft belongs to can send it: not another employee, not an administrator, whatever Outlook they have connected. Nothing in a document can cause a send, since sending needs a press of the button by the person.
+
+**Audit.** The log records that an email was sent, how many recipients, whether it was edited and how many were outside the organisation, never its text or addresses.
+
+**Not built.** Gmail (Google's send permissions are classed as sensitive or restricted and need app verification), calendar events created directly, and reading the mailbox.
