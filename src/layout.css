@@ -161,8 +161,7 @@ nav button.active svg { color: var(--accent); }
 .connector-unavailable { color: #92400e !important; }
 .connector-logo { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; color: #fff; font-size: 18px; font-weight: 700; }
 .connector-logo.small { width: 32px; height: 32px; font-size: 15px; border-radius: 9px; }
-.connector-logo.google_drive { background: linear-gradient(135deg, #ea4335, #fbbc05 55%, #34a853); }
-.connector-logo.microsoft365 { background: linear-gradient(135deg, #0078d4, #50a0e6); }
+.connector-logo.google_drive, .connector-logo.microsoft365, .connector-logo.dropbox, .connector-logo.docusign, .connector-logo.outlook_mail { background: #fff; border: 1px solid var(--line, #e4e6ea); }
 .connector-logo.planned { background: #d1d5db; }
 .connection-list { display: grid; gap: 8px; }
 .connection-row { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid #eceef2; border-radius: 12px; background: #fff; }
@@ -175,3 +174,64 @@ nav button.active svg { color: var(--accent); }
 .connection-actions .danger { color: #b42318; }
 @media (max-width: 1120px) { .connector-grid { grid-template-columns: 1fr; } }
 
+
+.connector-connected { display: inline-flex; align-items: center; gap: 4px; color: #1a7f45; font-weight: 600; }
+
+.folder-list { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.folder-list li { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line, #e4e6ea); border-radius: 10px; font-size: 13px; background: #fff; }
+.folder-list li > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-list li small { color: var(--muted, #6c7178); max-width: 320px; }
+.folder-list .danger { background: #b42318; color: #fff; border: 0; border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+
+/* ---------- Filtered search ---------- */
+.search-view { flex: 1; overflow: auto; padding: 32px max(5vw, 42px) 60px; display: flex; flex-direction: column; gap: 14px; }
+.search-box { display: flex; align-items: center; gap: 10px; max-width: 900px; padding: 10px 16px; border: 1px solid var(--line, #e4e6ea); border-radius: 999px; background: #fff; }
+.search-box input { flex: 1; border: 0; outline: 0; font: inherit; font-size: 15px; background: transparent; }
+.search-filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+.search-filters label { display: flex; align-items: center; gap: 6px; color: var(--muted, #6c7178); }
+.search-filters select { padding: 6px 10px; border: 1px solid var(--line, #e4e6ea); border-radius: 999px; background: #fff; font: inherit; }
+.filter-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { padding: 5px 12px; border: 1px solid var(--line, #e4e6ea); border-radius: 999px; background: #fff; font: inherit; font-size: 13px; cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--panel, #f6f7f8); border-color: var(--accent, #23262b); }
+.chip small { color: var(--muted, #6c7178); margin-left: 4px; }
+.search-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 28px; max-width: 1100px; }
+.search-result { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--soft-line, #eceef1); }
+.search-result h3 { margin: 0 0 2px; font-size: 16px; }
+.search-result small { color: var(--muted, #6c7178); font-size: 12px; }
+.search-result p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; color: #3b4047; }
+.result-title { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--ink, #16181b); cursor: pointer; text-align: left; }
+.result-title:hover { text-decoration: underline; }
+.search-facets h4 { margin: 0 0 8px; font-size: 13px; color: var(--muted, #6c7178); }
+.search-facets ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.search-facets button { width: 100%; display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 0; border-radius: 10px; background: none; font: inherit; font-size: 14px; cursor: pointer; text-align: left; }
+.search-facets button span { flex: 1; }
+.search-facets button em { font-style: normal; color: var(--muted, #6c7178); }
+.search-facets button[aria-pressed="true"] { background: var(--panel, #f6f7f8); font-weight: 600; }
+
+/* The same box for every icon, so titles line up whatever the icon is. */
+.result-icon { flex: none; width: 44px; height: 44px; display: grid; place-items: center; }
+.result-icon svg { flex: none; }
+.search-result > div:last-child { min-width: 0; flex: 1; }
+.file-app-icon { flex: none; }
+.result-icon.small { width: 38px; height: 38px; }
+
+/* ---------- Who a connection is for ---------- */
+.scope-chooser { margin: 0 0 18px; padding: 18px 20px; border: 1px solid var(--line, #e4e6ea); border-radius: 16px; background: #fff; display: flex; flex-direction: column; gap: 14px; }
+.scope-chooser h2 { margin: 0; font-size: 17px; }
+.scope-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.scope-option { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border: 2px solid var(--line, #e4e6ea); border-radius: 14px; cursor: pointer; background: #fff; }
+.scope-option.chosen { border-color: var(--accent, #23262b); background: var(--panel, #f6f7f8); }
+.scope-option.disabled { opacity: .55; cursor: not-allowed; }
+.scope-option input { margin-top: 3px; }
+.scope-option span { display: flex; flex-direction: column; gap: 4px; }
+.scope-option small { color: var(--muted, #6c7178); font-size: 12.5px; line-height: 1.45; }
+.scope-option .scope-hint { color: #8a5a00; }
+.scope-actions { display: flex; gap: 8px; }
+.scope-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; background: var(--panel-strong, #eceef1); font-size: 12px; font-weight: 600; color: #3b4047; white-space: nowrap; }
+.scope-badge.private { background: #eef3ff; color: #2b5fd0; }
+
+.connector-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 14px 0 4px; }
+.connector-search { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; max-width: 380px; border: 1px solid var(--line, #dfe3e8); border-radius: 999px; padding: 6px 12px; background: #fff; }
+.connector-search:focus-within { border-color: var(--ink, #111); }
+.connector-search input { flex: 1; border: 0; outline: 0; font: inherit; font-size: 14px; background: transparent; min-width: 0; }
+.connector-filters { display: flex; flex-wrap: wrap; gap: 6px; }

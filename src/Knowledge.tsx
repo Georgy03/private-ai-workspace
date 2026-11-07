@@ -9,6 +9,7 @@ import {
   cloudKnowledgeReview,
 } from "./api";
 import type { CloudStatus, KnowledgeEntity, KnowledgeEvidence, KnowledgeFact, KnowledgeOverview } from "./types";
+import { Shimmer } from "./Shimmer";
 
 type Tab = "verify" | "confirmed" | "entities";
 
@@ -188,7 +189,7 @@ export function KnowledgeView({ cloud, onOpenLink }: { cloud: CloudStatus; onOpe
     return (
       <div className="knowledge-view">
         <div className="page-heading"><div><span className="eyebrow">Firm cloud index</span><h1>Company knowledge</h1></div></div>
-        <p className="connectors-loading"><LoaderCircle size={15} className="spin" /> Loading…</p>
+        <p className="connectors-loading"><LoaderCircle size={15} className="spin" /> <Shimmer>Loading…</Shimmer></p>
       </div>
     );
   }

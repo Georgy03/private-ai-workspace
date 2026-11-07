@@ -128,6 +128,10 @@ export interface AnswerResponse {
   cloud: CloudStatus;
   /** How this answer was made, when the person should know (for example, a document too long to read in full). */
   notice?: string | null;
+  /** "xlsx" or "docx" when the person asked the chat to make that kind of file. */
+  file?: "xlsx" | "docx" | null;
+  /** What was done to answer, one plain sentence per step, in order. */
+  work?: string[];
 }
 
 export interface IndexJob {
@@ -168,6 +172,12 @@ export interface Connection {
   last_sync_epoch: number | null;
   last_error: string | null;
   documents: number;
+  /** Who the files are for: everyone at the firm (each seeing what they may open), or only the person who connected it. */
+  scope?: "workspace" | "private";
+  /** This person connected it. */
+  yours?: boolean;
+  /** For a mailbox connected for sending, the address mail is sent from. */
+  label?: string | null;
   /** A sync is running now. */
   syncing?: boolean;
   sync_started_epoch?: number | null;
@@ -271,6 +281,8 @@ export interface NameOnlyFile {
 export interface ConnectorsView {
   connectors: ConnectorInfo[];
   connections: Connection[];
+  /** This person may connect a source for the whole workspace. Anyone may connect one for themselves. */
+  can_share_with_workspace?: boolean;
 }
 
 export interface DocumentPreview {
@@ -309,6 +321,10 @@ export interface Agent {
 export interface AgentList {
   agents: Agent[];
   can_manage: boolean;
+  /** How long reports are kept; 0 means until their owner deletes them. */
+  retention_days: number;
+  /** The firm lets people send the emails their helpers prepare from the app. Off until an administrator says so. */
+  email_sending_enabled?: boolean;
 }
 
 export interface AgentDraft {
@@ -362,6 +378,213 @@ export interface AgentTask {
   instruction?: string;
   result?: string;
   sources?: { document_id: string; name: string; link: string | null }[];
+  /** How the report held up against the text the agent read. */
+  checks?: ReportChecks | null;
+  /** For a report made by a schedule: waiting for its owner, approved or rejected. */
+  review_status?: "pending" | "approved" | "rejected" | null;
+  /** The owner's own corrected version of the report. */
+  edited_result?: string | null;
+  schedule_id?: string | null;
+  /** When this work will be deleted, if it will be. */
+  deletes_epoch?: number | null;
+  /** What the owner said when asked: keep it, or let it run out. */
+  retention_choice?: "keep" | "expire" | null;
+  /** Its content has been deleted. */
+  deleted?: boolean;
   error?: string | null;
   events?: TaskEvent[];
+}
+
+// ---- Filtered search ----
+
+export interface BrowseFilters {
+  since_epoch?: number;
+  sources?: string[];
+  types?: string[];
+}
+
+export interface BrowseRow {
+  document_id: string;
+  name: string;
+  source: string;
+  file_type: string;
+  app: import("./fileApp").FileApp;
+  modified_epoch: number;
+  link: string | null;
+  excerpt: string;
+  location_label: string | null;
+  score: number;
+}
+
+export interface BrowseResult {
+  results: BrowseRow[];
+  total: number;
+  facets: { sources: { value: string; count: number }[]; types: { value: string; count: number }[] };
+}
+
+export interface ReportChecks {
+  figures_total: number;
+  figures_found: number;
+  figures_missing: string[];
+  quotes_total: number;
+  quotes_found: number;
+  quotes_missing: string[];
+}
+
+// ---- Recurring tasks ----
+
+export interface Cadence {
+  kind: "daily" | "weekly" | "monthly";
+  /** 0 is Monday. */
+  weekday: number;
+  /** 1 to 28. */
+  day: number;
+  /** Minutes after midnight, in the person's own time. */
+  minutes: number;
+  /** Minutes east of UTC. */
+  offset: number;
+}
+
+export interface Schedule {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  name: string;
+  instruction: string;
+  cadence: Cadence;
+  status: "active" | "paused";
+  pause_reason: string | null;
+  monthly_budget_micros: number | null;
+  spent_this_month_micros: number;
+  next_run_epoch: number | null;
+  last_run_epoch: number | null;
+  last_task_id: string | null;
+  last_note: string | null;
+  waiting_for_review: number;
+}
+
+export interface ScheduleDraft {
+  agent_id: string;
+  name: string;
+  instruction: string;
+  cadence: Cadence;
+  monthly_budget_dollars: number | null;
+}
+
+// ---- Emails and meetings an agent prepared for the person to send or book themselves ----
+
+export type PreparedAction =
+  | { kind: "email"; to: string[]; cc: string[]; subject: string; body: string }
+  | { kind: "meeting"; title: string; start: string; end: string; attendees: string[]; location: string; notes: string };
+
+export type PreparedItem = PreparedAction & {
+  id: string;
+  task_id: string;
+  task_title: string;
+  agent_name: string;
+  status: "proposed" | "approved" | "dismissed" | "sent";
+  edited: boolean;
+  /** Addresses outside the person's own organisation, to look at twice. */
+  outside: string[];
+  created_epoch: number;
+};
+
+/** An email written in the chat from the person's request, shown as a preview before it is sent. */
+/** A Zoom meeting made from the app, which can be moved or cancelled. `start` is "2026-11-10T10:00:00" in its own time zone. */
+export interface ZoomMeeting {
+  id: string;
+  topic: string;
+  start: string;
+  timezone: string;
+  duration_minutes: number;
+  join_url: string;
+  meeting_id: string;
+}
+
+/** A workspace: everything about one client or matter in one place. */
+export interface SpaceSummary {
+  id: string;
+  name: string;
+  description: string;
+  /** Files on this computer. */
+  files: number;
+  /** Documents pinned from the firm cloud index. */
+  cloud_files: number;
+  chats: number;
+  /** About how much room it takes on this computer: the search index of its files and its chats. */
+  stored_bytes: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SpaceFile {
+  kind: "local" | "cloud";
+  id: string;
+  name: string;
+  size: number;
+  status: "ready" | "warning" | "failed" | "missing";
+  warning: string | null;
+  /** For a pinned cloud document, the connected source it came from. */
+  source: string | null;
+  added_at: number;
+}
+
+export interface SpaceSavedChat {
+  id: string;
+  title: string;
+  updated_at: number;
+}
+
+/** What happened when files were added to a workspace. */
+export interface SpaceAddResult {
+  added: number;
+  failed: { name: string; reason: string }[];
+}
+
+export interface EmailDraft {
+  to: string[];
+  cc: string[];
+  subject: string;
+  body: string;
+  /** When the request gave a date and a time: the meeting the email is about, so a Zoom link can be made. */
+  meeting?: { topic: string; start: string; duration_minutes: number } | null;
+}
+
+// ---- Chat tools ----
+
+/** A file attached to a chat from this computer: read on this device and kept only in memory. */
+export interface AttachedFile {
+  id: string;
+  name: string;
+  characters: number;
+  warnings: string[];
+}
+
+/** A file the person tagged, so the question is answered from all of it. */
+export interface TaggedFile {
+  id: string;
+  name: string;
+  origin: "local" | "cloud";
+}
+
+/** What a question was limited to, if anything. */
+export type ChatScope = "local" | "cloud" | null;
+
+/** Where a question looks: everywhere, only this device, or only the firm cloud, with the firm cloud
+ *  optionally limited to some connected sources and kinds of file. */
+export interface SearchLimits {
+  scope: ChatScope;
+  sources: string[];
+  types: string[];
+}
+
+export interface ChatOptions {
+  /** Ask inside a workspace: only the files that were put in it are looked at. */
+  workspace?: string;
+  attachments?: string[];
+  tagged?: TaggedFile | null;
+  scope?: ChatScope;
+  /** With the firm cloud: only these connected sources, and only these kinds of file. */
+  sources?: string[];
+  types?: string[];
 }
