@@ -51,6 +51,37 @@ async fn provision_firm() -> workspace_cloud::Result<()> {
     Ok(())
 }
 
+/// `workspace-cloud check-secrets <firm id>` tries the production token store end to end against real AWS:
+/// it stores a test secret for the firm, reads it back, deletes it, and says whether all of that worked.
+/// Run it with the API's database login and the AWS credentials the services use, after `provision-firm`.
+/// It is the quickest way to learn that the key, the permissions and the database agree.
+async fn check_secrets() -> workspace_cloud::Result<()> {
+    use workspace_cloud::{auth::TenantId, secrets::refresh_token_name};
+    let usage = || workspace_cloud::Error::Config("usage: workspace-cloud check-secrets <firm id>".into());
+    let tenant = std::env::args().nth(2).and_then(|id| uuid::Uuid::parse_str(&id).ok()).map(TenantId).ok_or_else(usage)?;
+    let settings = Settings::for_migration()?;
+    if settings.allow_insecure {
+        return Err(workspace_cloud::Error::Config("check-secrets tests the production store: unset ALLOW_INSECURE".into()));
+    }
+    let pool = build_pool(&settings, 2)?;
+    let secrets = secrets_from_env(false, &pool).await?;
+    let name = refresh_token_name(tenant, uuid::Uuid::new_v4());
+    let value = format!("check-{}", uuid::Uuid::new_v4());
+    let wrong = |reason: &str| workspace_cloud::Error::Crypto(reason.into());
+    secrets.put(tenant, &name, &value).await?;
+    let read = secrets.get(tenant, &name).await;
+    // Clean up even if the read failed, so a half-working setup leaves nothing behind.
+    secrets.delete(tenant, &name).await?;
+    if read?.as_deref() != Some(value.as_str()) {
+        return Err(wrong("the secret read back is not the one that was stored"));
+    }
+    if secrets.get(tenant, &name).await?.is_some() {
+        return Err(wrong("the test secret is still there after it was deleted"));
+    }
+    println!("ok: stored, read back and deleted a test secret for firm {} under its own key", tenant.0);
+    Ok(())
+}
+
 /// `workspace-cloud worker` keeps connected sources up to date. Run it with the `app_worker`
 /// database login.
 async fn worker() -> workspace_cloud::Result<()> {
@@ -150,6 +181,7 @@ async fn run() -> workspace_cloud::Result<()> {
         Some("migrate") => return migrate().await,
         Some("worker") => return worker().await,
         Some("provision-firm") => return provision_firm().await,
+        Some("check-secrets") => return check_secrets().await,
         Some("download-model") => {
             // Fetches the meaning-search model once, so the server and the worker do not both
             // try to download it at the same moment.

@@ -54,33 +54,53 @@ workspace-cloud worker    # keeps connected sources up to date; run as the app_w
 ## Deploying on Railway
 
 The `Dockerfile` builds one image holding the API, the worker, the file reader (`workspace-extract`), OCR
-(Tesseract and Poppler) and the meaning-search model. Railway runs it as two services from the same
-repository, each with Root Directory `backend`:
+(Tesseract and Poppler) and the meaning-search model. Railway runs it as two services in one project, both from
+this repository. Railway no longer reads `railway.toml` files (config as code is deprecated), so these are
+settings on each service. They can be set in the dashboard, or with the CLI as below.
 
-| Service | Config as Code path | Command | Notes |
-|---|---|---|---|
-| `api` | `/backend/railway.api.toml` | the image's default (the API) | public domain, health check `/readyz`, listens on Railway's `PORT` |
-| `worker` | `/backend/railway.worker.toml` | `workspace-cloud worker` | no domain, at least 2 GB of memory |
+| Setting | `api` | `worker` |
+|---|---|---|
+| Source | the GitHub repository | the same |
+| Root Directory | `backend` | `backend` |
+| Dockerfile path | `Dockerfile` | `Dockerfile` |
+| Start command | none (the image's default is the API) | `workspace-cloud worker` |
+| Health check | `/readyz`, 300 s | none |
+| Restart policy | on failure, 10 tries | the same |
+| Public domain | yes (Networking, Generate Domain) | no |
+| Region | US East, next to the Neon database in Ohio | the same |
+| Memory | default | at least 2 GB |
 
-Variables for each are listed in `railway.env.example`. Never set `ALLOW_INSECURE`, and do not set
-`ANTHROPIC_API_KEY`: outside development the server refuses the direct Claude API, so agents and company
-knowledge stay off until the Bedrock path is built.
+```sh
+railway link -p <project> -s api          # in the repository folder (not backend/)
+railway api 'mutation { serviceInstanceUpdate(serviceId: "...", environmentId: "...", input: {
+  rootDirectory: "backend", dockerfilePath: "Dockerfile", healthcheckPath: "/readyz", healthcheckTimeout: 300,
+  restartPolicyType: ON_FAILURE, restartPolicyMaxRetries: 10 }) }'
+railway service scale --service api us-east=1 eu-west=0
+railway up --service api --detach         # builds the current local files, from the repository folder
+```
+
+Two things that went wrong the first time: do not list `Dockerfile` in `.dockerignore` (Railway applies it to the
+uploaded source before looking for the Dockerfile and then falls back to guessing the language), and run
+`railway up` only in a folder that is linked, or it creates a new project.
+
+Variables go in each service's Variables tab (or `scripts/railway-vars.sh`, which reads your private
+`.env.neon` and `.env.railway` and prints names only). They are listed in `railway.env.example`. Never set
+`ALLOW_INSECURE`, and do not set `ANTHROPIC_API_KEY`: outside development the server refuses the direct Claude API,
+so agents and company knowledge stay off until the Bedrock path is built.
 
 Migrations are not run by the services. Run `scripts/neon-migrate.sh` from a trusted machine before a release
 that adds one: it tests them on a copy of the database first. To make a firm and its key, run
 `workspace-cloud provision-firm "Firm name"` with the provisioner's credentials (see above).
 
-Before this can run you need, outside Railway: the Cognito user pool (`infra/auth.tf`) with its issuer and app
-client ID, the AWS credentials for the token store, the firm key made by `provision-firm`, and the callback
-address registered with each provider. `.dockerignore` keeps `.env*`, `.dev-state` and build output out of the
-image and out of any upload.
+Before the services can run you need, outside Railway: the Cognito user pool (`infra/auth.tf`) with its issuer and
+app client ID, the AWS credentials for the token store, the firm key made by `provision-firm`, and the callback
+address registered with each provider. The worker also refuses to start without at least one connector's client
+ID and secret. `.dockerignore` keeps `.env*`, `.dev-state` and build output out of the image and out of any upload.
 
 **Known gaps in this setup:** the file reader is limited by resource limits only. The architecture asks for it
 to run with no network and no view of the file system, which Railway's containers cannot enforce, so a hostile
 file that breaks the parser would run with the service's own network access. Run the reader somewhere that can
-isolate it before accepting files from people you do not know. The image has been checked in pieces (its
-Dockerfile lints clean, its OCR tools and certificates were tested, the code builds) but the full image build
-and a running deployment have not been tried.
+isolate it before accepting files from people you do not know.
 
 ## Trying it on a developer machine
 

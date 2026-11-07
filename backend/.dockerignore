@@ -9,6 +9,3 @@ target
 tests
 scripts
 examples
-Dockerfile
-.dockerignore
-railway.*.toml

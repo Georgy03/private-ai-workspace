@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
-# The cloud service: the API, the worker and the file reader, in one image. Railway runs it twice
-# with different start commands (railway.api.toml and railway.worker.toml). Build context: backend/.
+# The cloud service: the API, the worker and the file reader, in one image. Railway runs it as two
+# services with different start commands (see README.md, "Deploying on Railway"). Build context: backend/.
 #
 #   docker build -t workspace-cloud backend/
 #   docker run --rm workspace-cloud            # the API (needs the settings in README.md)
 #   docker run --rm workspace-cloud worker     # the worker
 #   docker run --rm workspace-cloud migrate    # migrations; normally run with scripts/neon-migrate.sh instead
 
-FROM rust:1-bookworm AS build
+FROM rust:1-trixie AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake clang pkg-config \
  && rm -rf /var/lib/apt/lists/*
@@ -34,7 +34,7 @@ RUN ./target/release/workspace-cloud download-model
 
 # The programs the service shells out to: OCR for scans and photos (Tesseract), and Poppler to turn
 # PDF pages into pictures first. Without them those files are found by name only.
-FROM debian:bookworm-slim AS runtime-base
+FROM debian:trixie-slim AS runtime-base
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tesseract-ocr tesseract-ocr-eng poppler-utils libstdc++6 libgomp1 \
  && rm -rf /var/lib/apt/lists/* \
