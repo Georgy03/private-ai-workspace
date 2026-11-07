@@ -184,6 +184,13 @@ pub struct AnswerResponse {
     /// was too long to read in full.
     #[serde(default)]
     pub notice: Option<String>,
+    /// "xlsx" or "docx" when the person asked the chat to make that kind of file, so the page can
+    /// offer to save the answer as one.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// What was done to answer, one plain sentence per step, in order.
+    #[serde(default)]
+    pub work: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="224" fill="#176845"/>
-  <path d="M512 178c-118 0-214 96-214 214v76h-42c-35 0-64 29-64 64v234c0 35 29 64 64 64h512c35 0 64-29 64-64V532c0-35-29-64-64-64h-42v-76c0-118-96-214-214-214Zm0 94c66 0 120 54 120 120v76H392v-76c0-66 54-120 120-120Zm0 300c45 0 81 36 81 81 0 28-14 53-36 67v52h-90v-52a81 81 0 0 1 45-148Z" fill="#F7FAF4"/>
-  <circle cx="790" cy="248" r="72" fill="#62C08A"/>
+  <!-- The same crystal as the app's AI icon (src/Logo.tsx, the "mark" variant): black lines on a
+       clear background, about 73% of the canvas wide. -->
+  <g transform="translate(512 512) translate(-549 -543)">
+<polygon points="549,184 872,716 685,657 440,657 226,716" fill="#16181b" opacity=".13"/>
+<polygon points="222,372 549,495 876,372 549,902" fill="#16181b" opacity=".13"/>
+<polygon points="222,716 440,657 685,657 876,716 876,724 549,902 222,724" fill="#16181b" opacity=".24"/>
+<g stroke="#16181b" stroke-width="28" stroke-linejoin="round" stroke-linecap="round" fill="none">
+<path d="M549 184 876 366 876 724 549 902 222 724 222 366Z"/>
+<path d="M549 184 222 724M549 184 876 724M549 902 222 366M549 902 876 366"/>
+<path d="M222 372 549 495 876 372"/>
+<path d="M222 716 440 657 685 657 876 716"/>
+</g>
+  </g>
 </svg>

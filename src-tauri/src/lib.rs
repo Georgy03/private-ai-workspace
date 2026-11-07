@@ -2,7 +2,10 @@ mod cloud;
 mod commands;
 mod db;
 mod entities;
+mod email_draft;
 mod error;
+mod export;
+mod helper_draft;
 mod merge;
 mod model_catalog;
 pub mod models;
@@ -10,6 +13,7 @@ pub mod parser;
 pub mod parser_ipc;
 mod provider;
 mod state;
+mod workspaces;
 
 use std::sync::Arc;
 
@@ -32,19 +36,48 @@ pub fn run() {
             commands::start_index,
             commands::cancel_index,
             commands::search_documents,
+            commands::attach_file,
+            commands::remove_attachment,
             commands::answer_question,
             commands::cloud_status,
             commands::cloud_sign_in,
             commands::cloud_connectors,
             commands::cloud_connect,
             commands::cloud_disconnect,
+            commands::cloud_set_scope,
             commands::cloud_sync_now,
             commands::cloud_sign_out,
             commands::set_cloud_enabled,
             commands::document_preview,
             commands::open_document_link,
+            commands::open_prepared_link,
+            commands::open_calendar_file,
+            commands::export_report,
+            commands::draft_helper,
+            commands::ask_web,
+            commands::draft_email,
+            commands::cloud_send_email,
+            commands::cloud_zoom_meeting,
+            commands::cloud_zoom_meetings,
+            commands::cloud_zoom_reschedule,
+            commands::cloud_zoom_cancel,
+            workspaces::workspace_list,
+            workspaces::workspace_create,
+            workspaces::workspace_update,
+            workspaces::workspace_delete,
+            workspaces::workspace_files,
+            workspaces::workspace_add_files,
+            workspaces::workspace_add_folder,
+            workspaces::workspace_add_cloud,
+            workspaces::workspace_remove_file,
+            workspaces::workspace_chats,
+            workspaces::workspace_chat,
+            workspaces::workspace_save_chat,
+            workspaces::workspace_delete_chat,
+            commands::cloud_drive_save,
             commands::cloud_connection_files,
             commands::cloud_agents_call,
+            commands::cloud_search_browse,
             commands::cloud_knowledge,
             commands::cloud_knowledge_enable,
             commands::cloud_knowledge_list,
@@ -55,6 +88,7 @@ pub fn run() {
             commands::list_entities,
             commands::save_entity,
             commands::remove_entity,
+            commands::remove_root,
             commands::clear_local_data,
             commands::install_sample,
         ])

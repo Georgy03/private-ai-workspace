@@ -87,6 +87,72 @@ struct Tokens {
     expires_at: i64,
 }
 
+/// Narrows a search of the firm cloud index to some connected sources ("google_drive", ...) and
+/// kinds of file ("presentation" is Slides or PowerPoint). Empty means no limit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchFilter {
+    pub sources: Vec<String>,
+    pub types: Vec<String>,
+    /// Only these documents (the ones pinned to a workspace), by their ID in the firm cloud index.
+    pub documents: Vec<String>,
+}
+
+const FILE_KINDS: &[&str] = &["document", "spreadsheet", "presentation", "pdf", "image", "other"];
+
+impl SearchFilter {
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty() && self.types.is_empty() && self.documents.is_empty()
+    }
+
+    /// The filter the person chose, or why it cannot be used. Nothing unexpected is passed on.
+    pub fn checked(sources: Option<Vec<String>>, types: Option<Vec<String>>) -> Result<SearchFilter, String> {
+        let sources = sources.unwrap_or_default();
+        let types = types.unwrap_or_default();
+        let source_ok = |source: &String| !source.is_empty() && source.len() <= 40 && source.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if sources.len() > 20 || types.len() > FILE_KINDS.len() || !sources.iter().all(source_ok) || !types.iter().all(|kind| FILE_KINDS.contains(&kind.as_str())) {
+            return Err("That filter is not one the firm cloud index understands.".into());
+        }
+        let mut filter = SearchFilter { sources, types, documents: Vec::new() };
+        filter.sources.sort();
+        filter.sources.dedup();
+        filter.types.sort();
+        filter.types.dedup();
+        Ok(filter)
+    }
+
+    /// For the person: "Google Drive and Dropbox, presentations".
+    pub fn describe(&self) -> String {
+        let source = |source: &String| match source.as_str() {
+            "google_drive" => "Google Drive".to_string(),
+            "microsoft365" => "Microsoft 365".to_string(),
+            "dropbox" => "Dropbox".to_string(),
+            "docusign" => "DocuSign".to_string(),
+            "quickbooks" => "QuickBooks".to_string(),
+            other => other.replace('_', " "),
+        };
+        let kind = |kind: &String| match kind.as_str() {
+            "document" => "documents",
+            "spreadsheet" => "spreadsheets",
+            "presentation" => "presentations",
+            "pdf" => "PDFs",
+            "image" => "images",
+            _ => "other files",
+        };
+        let join = |items: Vec<String>| match items.len() {
+            0 | 1 => items.join(""),
+            _ => format!("{} and {}", items[..items.len() - 1].join(", "), items[items.len() - 1]),
+        };
+        let mut parts = Vec::new();
+        if !self.sources.is_empty() {
+            parts.push(join(self.sources.iter().map(source).collect()));
+        }
+        if !self.types.is_empty() {
+            parts.push(join(self.types.iter().map(|k| kind(k).to_string()).collect()));
+        }
+        parts.join(", ")
+    }
+}
+
 pub struct Cloud {
     dir: PathBuf,
     http: reqwest::Client,
@@ -176,6 +242,10 @@ pub struct ConnectorInfo {
 }
 
 /// A source the firm has connected.
+fn workspace() -> String {
+    "workspace".into()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     pub id: String,
@@ -198,6 +268,13 @@ pub struct Connection {
     pub sync_files_failed: i64,
     #[serde(default)]
     pub next_sync_epoch: Option<f64>,
+    /// "workspace" (everyone at the firm, each seeing what they may open) or "private" (only the
+    /// person who connected it).
+    #[serde(default = "workspace")]
+    pub scope: String,
+    /// This person connected it.
+    #[serde(default)]
+    pub yours: bool,
     /// Files whose text can be searched.
     #[serde(default)]
     pub readable: i64,
@@ -254,6 +331,9 @@ pub struct NameOnlyFile {
 pub struct ConnectorsView {
     pub connectors: Vec<ConnectorInfo>,
     pub connections: Vec<Connection>,
+    /// This person may connect a source for the whole workspace. Anyone may connect one for themselves.
+    #[serde(default)]
+    pub can_share_with_workspace: bool,
 }
 
 struct Raw {
@@ -271,6 +351,15 @@ fn manage_error(status: u16) -> CloudError {
     }
 }
 
+/// The reason a server gave for refusing a request: its `error` text, if it is short, plain text.
+/// Shown as it is, so it never carries anything but words.
+fn server_reason(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let text = value.get("error")?.as_str()?.trim();
+    let plain = !text.is_empty() && text.chars().count() <= 200 && text.chars().all(|c| !c.is_control());
+    plain.then(|| text.to_string())
+}
+
 /// Connection IDs go into a web address, so only real IDs are allowed through.
 fn check_id(id: &str) -> Result<(), CloudError> {
     if id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
@@ -283,14 +372,23 @@ fn check_id(id: &str) -> Result<(), CloudError> {
 }
 
 /// The server hands back an address for the browser to open. A server that has been tampered with
-/// could send something else (a local file, an app link), so only the sign-in pages of the two
+/// could send something else (a local file, an app link), so only the sign-in pages of the
 /// supported providers are accepted. Development builds also accept this machine.
 fn check_browser_url(url: &str, allow_local: bool) -> Result<(), CloudError> {
     let refuse = || CloudError::Unavailable("the sign-in address was not recognised".into());
     let parsed = reqwest::Url::parse(url).map_err(|_| refuse())?;
     let host = parsed.host_str().unwrap_or("");
     let provider = parsed.scheme() == "https"
-        && matches!(host, "accounts.google.com" | "login.microsoftonline.com");
+        && matches!(
+            host,
+            "accounts.google.com"
+                | "login.microsoftonline.com"
+                | "www.dropbox.com"
+                | "account.docusign.com"
+                | "account-d.docusign.com"
+                | "appcenter.intuit.com"
+                | "zoom.us"
+        );
     let local =
         allow_local && parsed.scheme() == "http" && matches!(host, "localhost" | "127.0.0.1");
     if provider || local {
@@ -432,6 +530,18 @@ impl Cloud {
 
     // ---- Search ----
 
+    /// Like `search_tracked`, limited to some connected sources and kinds of file.
+    pub async fn search_filtered_tracked(
+        &self,
+        question: &str,
+        limit: usize,
+        filter: &SearchFilter,
+    ) -> (Result<Vec<SearchHit>, CloudError>, bool) {
+        let mut sent = false;
+        let result = self.search_in(question, limit, None, filter, &mut sent).await;
+        (result, sent)
+    }
+
     #[cfg(test)]
     pub async fn search(&self, question: &str, limit: usize) -> Result<Vec<SearchHit>, CloudError> {
         self.search_tracked(question, limit).await.0
@@ -449,13 +559,49 @@ impl Cloud {
         (result, sent)
     }
 
+    /// Searches only inside the files one of the person's own reports was drawn from, so a question
+    /// about that report is answered from its evidence. `task` is the report's ID.
+    pub async fn search_report(
+        &self,
+        task: &str,
+        question: &str,
+        limit: usize,
+    ) -> (Result<Vec<SearchHit>, CloudError>, bool) {
+        let mut sent = false;
+        let result = self.search_in(question, limit, Some(task), &SearchFilter::default(), &mut sent).await;
+        (result, sent)
+    }
+
     async fn search_inner(
         &self,
         question: &str,
         limit: usize,
         sent: &mut bool,
     ) -> Result<Vec<SearchHit>, CloudError> {
-        let body = serde_json::json!({ "query": question, "limit": limit });
+        self.search_in(question, limit, None, &SearchFilter::default(), sent).await
+    }
+
+    async fn search_in(
+        &self,
+        question: &str,
+        limit: usize,
+        task: Option<&str>,
+        filter: &SearchFilter,
+        sent: &mut bool,
+    ) -> Result<Vec<SearchHit>, CloudError> {
+        let mut body = serde_json::json!({ "query": question, "limit": limit });
+        if let Some(task) = task {
+            body["task"] = serde_json::json!(task);
+        }
+        if !filter.sources.is_empty() {
+            body["sources"] = serde_json::json!(filter.sources);
+        }
+        if !filter.types.is_empty() {
+            body["types"] = serde_json::json!(filter.types);
+        }
+        if !filter.documents.is_empty() {
+            body["documents"] = serde_json::json!(filter.documents);
+        }
         let raw = self
             .authed(
                 reqwest::Method::POST,
@@ -575,6 +721,8 @@ impl Cloud {
         #[derive(Deserialize)]
         struct Catalogue {
             connectors: Vec<ConnectorInfo>,
+            #[serde(default)]
+            can_share_with_workspace: bool,
         }
         #[derive(Deserialize)]
         struct Listing {
@@ -612,13 +760,13 @@ impl Cloud {
         if catalogue.status != 200 || listing.status != 200 {
             return Err(manage_error(catalogue.status.max(listing.status)));
         }
+        let catalogue = serde_json::from_slice::<Catalogue>(&catalogue.body).map_err(|_| not_understood())?;
         Ok(ConnectorsView {
-            connectors: serde_json::from_slice::<Catalogue>(&catalogue.body)
-                .map_err(|_| not_understood())?
-                .connectors,
+            connectors: catalogue.connectors,
             connections: serde_json::from_slice::<Listing>(&listing.body)
                 .map_err(|_| not_understood())?
                 .connections,
+            can_share_with_workspace: catalogue.can_share_with_workspace,
         })
     }
 
@@ -630,8 +778,12 @@ impl Cloud {
         kind: &str,
         domains: &[String],
         reconnect: Option<&str>,
+        scope: Option<&str>,
     ) -> Result<String, CloudError> {
         let mut body = serde_json::json!({ "kind": kind });
+        if let Some(scope) = scope {
+            body["scope"] = serde_json::json!(scope);
+        }
         if !domains.is_empty() {
             body["domains"] = serde_json::json!(domains);
         }
@@ -659,6 +811,30 @@ impl Cloud {
             .ok_or_else(|| CloudError::Unavailable("the reply was not understood".into()))?;
         check_browser_url(&url, cfg!(debug_assertions))?;
         Ok(url)
+    }
+
+    /// Changes who a connection's files are for: "private" or "workspace".
+    pub async fn set_scope(&self, id: &str, scope: &str) -> Result<(), CloudError> {
+        check_id(id)?;
+        if !matches!(scope, "private" | "workspace") {
+            return Err(CloudError::Unavailable("that is not a valid choice".into()));
+        }
+        let body = serde_json::json!({ "scope": scope });
+        let mut sent = false;
+        let raw = self
+            .authed(
+                reqwest::Method::PUT,
+                &format!("/v1/connections/{id}/scope"),
+                Some(&body),
+                MANAGE_TIMEOUT,
+                false,
+                &mut sent,
+            )
+            .await?;
+        match raw.status {
+            200 => Ok(()),
+            status => Err(manage_error(status)),
+        }
     }
 
     pub async fn disconnect(&self, id: &str) -> Result<(), CloudError> {
@@ -758,6 +934,10 @@ impl Cloud {
                 .map_err(|_| CloudError::Unavailable("the reply was not understood".into())),
             404 => Err(CloudError::Unavailable(
                 "that item no longer exists, or it is not one you can see".into(),
+            )),
+            // The server says why it refused ("connect your Outlook first"): that is what to show.
+            400 | 422 => Err(CloudError::Unavailable(
+                server_reason(&raw.body).unwrap_or_else(|| "the server did not accept the request".into()),
             )),
             status => Err(manage_error(status)),
         }
@@ -1074,13 +1254,60 @@ pub fn check_document_link(url: &str) -> Result<(), CloudError> {
     let host = parsed.host_str().unwrap_or("");
     let known = matches!(
         host,
-        "drive.google.com" | "docs.google.com" | "onedrive.live.com" | "1drv.ms"
+        "drive.google.com"
+            | "docs.google.com"
+            | "onedrive.live.com"
+            | "1drv.ms"
+            | "www.dropbox.com"
+            | "app.docusign.com"
+            | "appdemo.docusign.com"
     ) || host.ends_with(".sharepoint.com");
     if parsed.scheme() == "https" && parsed.username().is_empty() && known {
         Ok(())
     } else {
         Err(refuse())
     }
+}
+
+/// Addresses that open a person's own mail or calendar with a message or meeting filled in.
+/// Only the compose and new-event pages of Gmail, Outlook and Google Calendar, or a plain `mailto:`
+/// link: a prepared draft must never be able to open anything else.
+pub fn check_prepared_link(url: &str) -> Result<(), CloudError> {
+    let refuse = || CloudError::Unavailable("that address cannot be opened".into());
+    if url.len() > 8_000 || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(refuse());
+    }
+    if let Some(rest) = url.strip_prefix("mailto:") {
+        // The recipients, then optional cc, subject and body: nothing that is not part of a draft.
+        let query = rest.split_once('?').map_or("", |(_, query)| query);
+        let allowed = query.split('&').filter(|pair| !pair.is_empty()).all(|pair| {
+            matches!(pair.split_once('=').map_or(pair, |(key, _)| key), "cc" | "subject" | "body")
+        });
+        return if allowed && !rest.is_empty() { Ok(()) } else { Err(refuse()) };
+    }
+    let parsed = reqwest::Url::parse(url).map_err(|_| refuse())?;
+    let path = parsed.path();
+    let ok = parsed.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.port().is_none()
+        && match parsed.host_str().unwrap_or("") {
+            "mail.google.com" => path.starts_with("/mail/"),
+            "calendar.google.com" => path == "/calendar/render",
+            "outlook.office.com" | "outlook.live.com" => {
+                path.starts_with("/mail/deeplink/compose") || path.starts_with("/calendar/0/deeplink/compose") || path.starts_with("/calendar/deeplink/compose")
+            }
+            _ => false,
+        };
+    if ok { Ok(()) } else { Err(refuse()) }
+}
+
+/// A calendar file the app writes and the person opens: a short, plain `.ics` made by the app.
+pub fn check_calendar_file(text: &str) -> Result<(), CloudError> {
+    let trimmed = text.trim();
+    if text.len() > 40_000 || !trimmed.starts_with("BEGIN:VCALENDAR") || !trimmed.ends_with("END:VCALENDAR") || text.contains('\0') {
+        return Err(CloudError::Unavailable("that is not a calendar file".into()));
+    }
+    Ok(())
 }
 
 /// Opens an address in the person's default browser.
@@ -1259,6 +1486,39 @@ mod tests {
         );
         assert!(hit.citation_id.starts_with("cloud:") && hit.document_id.starts_with("cloud:"));
         assert_eq!(hit.excerpt, "The retainer is due within thirty days.");
+    }
+
+    #[test]
+    fn a_filter_is_checked_tidied_and_described_in_words() {
+        let filter = SearchFilter::checked(Some(vec!["dropbox".into(), "google_drive".into(), "dropbox".into()]), Some(vec!["presentation".into(), "document".into()])).unwrap();
+        assert_eq!(filter.sources, ["dropbox", "google_drive"]);
+        assert_eq!(filter.types, ["document", "presentation"]);
+        assert_eq!(filter.describe(), "Dropbox and Google Drive, documents and presentations");
+        assert_eq!(SearchFilter::checked(Some(vec!["google_drive".into()]), None).unwrap().describe(), "Google Drive");
+        assert!(SearchFilter::checked(None, None).unwrap().is_empty());
+        for bad in [(Some(vec!["Google Drive".into()]), None), (Some(vec!["a;b".into()]), None), (None, Some(vec!["spreadsheets".into()])), (Some(vec![String::new()]), None), (Some((0..21).map(|n| format!("s{n}")).collect()), None)] {
+            assert!(SearchFilter::checked(bad.0, bad.1).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_filtered_search_sends_the_sources_and_kinds_and_an_unfiltered_one_sends_neither() {
+        let dir = tempfile::tempdir().unwrap();
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen = bodies.clone();
+        let (api, _log) = serve(move |request| {
+            seen.lock().unwrap().push(serde_json::from_str(&request.body).unwrap());
+            (200, REAL_REPLY.into(), 0)
+        })
+        .await;
+        let cloud = cloud_for(dir.path(), &api, None);
+        sign_in_tokens(&cloud, "t", None, 3600);
+        let filter = SearchFilter::checked(Some(vec!["google_drive".into()]), Some(vec!["presentation".into()])).unwrap();
+        assert!(cloud.search_filtered_tracked("q", 5, &filter).await.0.is_ok());
+        assert!(cloud.search_tracked("q", 5).await.0.is_ok());
+        let sent = bodies.lock().unwrap();
+        assert_eq!((sent[0]["sources"].clone(), sent[0]["types"].clone()), (serde_json::json!(["google_drive"]), serde_json::json!(["presentation"])));
+        assert!(sent[1].get("sources").is_none() && sent[1].get("types").is_none());
     }
 
     #[tokio::test]
@@ -1615,12 +1875,15 @@ mod tests {
                 "microsoft365",
                 &["firm.com".to_string()],
                 Some("6a419cce-0ea4-429c-b13e-0dd800d11b41"),
+                Some("private"),
             )
             .await
             .unwrap();
         assert!(url.starts_with("https://accounts.google.com/"));
         let body: serde_json::Value = serde_json::from_str(&bodies.lock().unwrap()[0]).unwrap();
         assert_eq!(body["kind"], "microsoft365");
+        // The choice of who the files are for is passed on.
+        assert_eq!(body["scope"], "private");
         assert_eq!(body["domains"][0], "firm.com");
         assert_eq!(body["reconnect"], "6a419cce-0ea4-429c-b13e-0dd800d11b41");
 
@@ -1635,12 +1898,22 @@ mod tests {
             "not a url",
         ] {
             *reply.lock().unwrap() = format!(r#"{{"authorization_url":"{evil}"}}"#);
-            let result = cloud.start_connection("google_drive", &[], None).await;
+            let result = cloud.start_connection("google_drive", &[], None, None).await;
             assert!(
                 matches!(result, Err(CloudError::Unavailable(_))),
                 "{evil}: {result:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_refusal_shows_the_reason_the_server_gave_only_when_it_is_short_plain_words() {
+        assert_eq!(server_reason(br#"{"error":"connect your Outlook first: open Connectors, Outlook email"}"#).as_deref(), Some("connect your Outlook first: open Connectors, Outlook email"));
+        assert_eq!(server_reason(b"not json"), None);
+        assert_eq!(server_reason(br#"{"error":""}"#), None);
+        assert_eq!(server_reason(br#"{"error":"two\nlines"}"#), None);
+        assert_eq!(server_reason(format!(r#"{{"error":"{}"}}"#, "x".repeat(201)).as_bytes()), None);
+        assert_eq!(server_reason(br#"{"other":"x"}"#), None);
     }
 
     #[test]
@@ -1650,6 +1923,13 @@ mod tests {
             false
         )
         .is_ok());
+        // Dropbox and DocuSign sign in too, and nothing that only looks like them.
+        for good in ["https://www.dropbox.com/oauth2/authorize?x=1", "https://account.docusign.com/oauth/auth?x=1", "https://account-d.docusign.com/oauth/auth?x=1", "https://appcenter.intuit.com/connect/oauth2?x=1", "https://zoom.us/oauth/authorize?x=1"] {
+            assert!(check_browser_url(good, false).is_ok(), "{good}");
+        }
+        for bad in ["https://dropbox.com.evil.example/oauth2/authorize", "https://www.dropbox.com.evil.example/", "https://account.docusign.com.evil.example/", "http://www.dropbox.com/oauth2/authorize", "https://zoom.us.evil.example/oauth/authorize", "https://evilzoom.us/oauth/authorize", "http://zoom.us/oauth/authorize"] {
+            assert!(check_browser_url(bad, false).is_err(), "{bad}");
+        }
         assert!(check_browser_url("http://127.0.0.1:8080/x", false).is_err());
         assert!(check_browser_url("http://127.0.0.1:8080/x", true).is_ok());
         assert!(check_browser_url("http://localhost.evil.example/", true).is_err());
@@ -1659,10 +1939,54 @@ mod tests {
     }
 
     #[test]
+    fn a_prepared_draft_can_only_open_the_compose_and_new_event_pages_of_mail_and_calendar() {
+        for good in [
+            "https://mail.google.com/mail/?view=cm&fs=1&to=a%40b.com&su=Hi&body=Hello",
+            "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Review&dates=20261105T140000/20261105T150000",
+            "https://outlook.office.com/mail/deeplink/compose?to=a%40b.com&subject=Hi&body=Hello",
+            "https://outlook.office.com/calendar/0/deeplink/compose?subject=Review&startdt=2026-11-05T14:00:00",
+            "https://outlook.live.com/mail/deeplink/compose?to=a%40b.com",
+            "mailto:a@b.com?subject=Hi&body=Hello",
+            "mailto:a@b.com,c@d.com?cc=e@f.com&subject=Hi",
+        ] {
+            assert!(check_prepared_link(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "https://evil.example/mail/?view=cm",
+            "https://mail.google.com.evil.example/mail/",
+            "https://mail.google.com@evil.example/mail/",
+            "https://mail.google.com:8443/mail/",
+            "https://mail.google.com/accounts/Logout",
+            "https://calendar.google.com/calendar/u/0/r/settings",
+            "http://mail.google.com/mail/?view=cm",
+            "https://outlook.office.com/owa/",
+            "mailto:a@b.com?attach=/etc/passwd",
+            "mailto:a@b.com?body=x&bcc=spy@evil.example",
+            "mailto:",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "mailto:a@b.com?subject=Hi there",
+            "https://mail.google.com/mail/?view=cm\nHost: x",
+        ] {
+            assert!(check_prepared_link(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_a_plain_calendar_file_is_written_and_opened() {
+        assert!(check_calendar_file("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n").is_ok());
+        assert!(check_calendar_file("#!/bin/sh\nrm -rf /").is_err());
+        assert!(check_calendar_file("BEGIN:VCALENDAR\nEND:VCALENDAR\0").is_err());
+        assert!(check_calendar_file(&format!("BEGIN:VCALENDAR{}END:VCALENDAR", "x".repeat(50_000))).is_err());
+    }
+
+    #[test]
     fn only_web_pages_of_the_supported_services_may_be_opened_as_documents() {
         for good in [
             "https://drive.google.com/open?id=abc",
             "https://docs.google.com/document/d/abc/edit",
+            "https://www.dropbox.com/home/Clients/Retainer.txt",
+            "https://app.docusign.com/documents/details/11111111-2222-3333-4444-555555555555",
             "https://firm.sharepoint.com/sites/team/Shared%20Documents/Plan.docx",
             "https://firm-my.sharepoint.com/personal/a_firm_com/Documents/Plan.docx",
             "https://onedrive.live.com/redir?resid=1",
@@ -1675,6 +1999,8 @@ mod tests {
             "javascript:alert(1)",
             "https://drive.google.com.evil.example/open",
             "https://evil.example/firm.sharepoint.com",
+            "https://www.dropbox.com.evil.example/home",
+            "https://app.docusign.com@evil.example/x",
             "https://sharepoint.com.evil.example/x",
             "https://drive.google.com@evil.example/",
             "not a url",
@@ -1825,7 +2151,7 @@ mod tests {
         let cloud = cloud_for(dir.path(), &forbidden, None);
         sign_in_tokens(&cloud, "t", None, 3600);
         let error = cloud
-            .start_connection("google_drive", &[], None)
+            .start_connection("google_drive", &[], None, None)
             .await
             .unwrap_err();
         assert_eq!(error, CloudError::NotAllowed);
@@ -1843,7 +2169,7 @@ mod tests {
         let cloud = cloud_for(dir.path(), &unset, None);
         sign_in_tokens(&cloud, "t", None, 3600);
         assert!(
-            matches!(cloud.start_connection("google_drive", &[], None).await, Err(CloudError::Unavailable(m)) if m.contains("not set up"))
+            matches!(cloud.start_connection("google_drive", &[], None, None).await, Err(CloudError::Unavailable(m)) if m.contains("not set up"))
         );
 
         // Signed out: nothing is sent, and the person is told to sign in.

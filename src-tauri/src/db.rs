@@ -23,7 +23,7 @@ const KEYRING_ACCOUNT: &str = "local-database-key";
 const DEV_KEY_FILE: &str = "database.key";
 
 pub struct Database {
-    connection: Mutex<Connection>,
+    pub(crate) connection: Mutex<Connection>,
 }
 
 impl Database {
@@ -143,7 +143,8 @@ impl Database {
                 );",
             )
             .map_err(db_error)?;
-        Ok(())
+        drop(connection);
+        self.migrate_workspaces()
     }
 
     pub fn setting(&self, key: &str) -> AppResult<Option<String>> {
@@ -171,6 +172,29 @@ impl Database {
             )
             .map_err(db_error)?;
         Ok(())
+    }
+
+    /// Stops indexing a folder and forgets what was read from it. The files themselves are untouched.
+    pub fn remove_root(&self, path: &str) -> AppResult<usize> {
+        let mut connection = self.connection.lock().map_err(poison_error)?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        // Only files inside this folder: the path must continue with a separator, so removing
+        // "/Users/me/Docs" does not touch "/Users/me/Docs-old".
+        let inside = "substr(path, 1, length(?1)) = ?1 AND substr(path, length(?1) + 1, 1) IN ('/', '\\')";
+        transaction
+            .execute(
+                &format!("DELETE FROM chunks_fts WHERE document_id IN (SELECT id FROM documents WHERE {inside})"),
+                [path],
+            )
+            .map_err(db_error)?;
+        let removed = transaction
+            .execute(&format!("DELETE FROM documents WHERE {inside}"), [path])
+            .map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM approved_roots WHERE path = ?1", [path])
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        Ok(removed)
     }
 
     pub fn roots(&self) -> AppResult<Vec<String>> {
@@ -808,7 +832,7 @@ fn compounds(words: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn make_fts_query(query: &str) -> AppResult<String> {
+pub(crate) fn make_fts_query(query: &str) -> AppResult<String> {
     let words = query
         .split(|character: char| {
             !character.is_alphanumeric() && character != '-' && character != '_'
@@ -833,7 +857,7 @@ fn make_fts_query(query: &str) -> AppResult<String> {
 
 /// Prefix matching lets "mens" find "mens" and "mensaje" alike, so a passage that matches only one
 /// of several question words is usually a coincidence. It must contain at least half of them.
-fn covers_enough_terms(terms: &[String], name: &str, text: &str) -> bool {
+pub(crate) fn covers_enough_terms(terms: &[String], name: &str, text: &str) -> bool {
     if terms.len() < 2 {
         return true;
     }
@@ -849,7 +873,7 @@ fn covers_enough_terms(terms: &[String], name: &str, text: &str) -> bool {
     covered >= terms.len().div_ceil(2)
 }
 
-fn query_terms(query: &str) -> Vec<String> {
+pub(crate) fn query_terms(query: &str) -> Vec<String> {
     query
         .split(|character: char| !character.is_alphanumeric())
         .map(str::to_lowercase)
@@ -857,7 +881,7 @@ fn query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn excerpt(text: &str, query: &str, max_chars: usize) -> String {
+pub(crate) fn excerpt(text: &str, query: &str, max_chars: usize) -> String {
     let lower = text.to_lowercase();
     let first_term = query
         .split_whitespace()
@@ -879,18 +903,18 @@ fn excerpt(text: &str, query: &str, max_chars: usize) -> String {
     }
 }
 
-fn escape_like(value: &str) -> String {
+pub(crate) fn escape_like(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
 }
 
-fn db_error(error: rusqlite::Error) -> AppError {
+pub(crate) fn db_error(error: rusqlite::Error) -> AppError {
     AppError::Database(error.to_string())
 }
 
-fn poison_error<T>(error: std::sync::PoisonError<T>) -> AppError {
+pub(crate) fn poison_error<T>(error: std::sync::PoisonError<T>) -> AppError {
     AppError::Internal(error.to_string())
 }
 
@@ -939,6 +963,42 @@ mod tests {
         let hits = db.search("payment due", 8).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].document_id, "doc-1");
+    }
+
+    #[test]
+    fn removing_a_folder_forgets_only_its_own_files() {
+        let db = Database::open_memory().unwrap();
+        let add = |id: &str, path: &str| {
+            let document = DocumentResource {
+                id: id.into(),
+                name: format!("{id}.txt"),
+                path: path.into(),
+                mime_type: "text/plain".into(),
+                size: 1,
+                modified_at: 1,
+                content_hash: id.into(),
+                status: ParseStatus::Ready,
+                warning: None,
+                chunk_count: 1,
+            };
+            let block = ParsedBlock {
+                text: "Payment is due within thirty days.".into(),
+                location: SourceLocation::default(),
+                ocr: false,
+                ocr_confidence: None,
+            };
+            db.upsert_document(&document, &[block]).unwrap();
+        };
+        db.add_root("/work/Docs").unwrap();
+        db.add_root("/work/Docs-old").unwrap();
+        add("inside", "/work/Docs/a.txt");
+        add("nested", "/work/Docs/sub/b.txt");
+        add("sibling", "/work/Docs-old/c.txt");
+
+        assert_eq!(db.remove_root("/work/Docs").unwrap(), 2);
+        assert_eq!(db.roots().unwrap(), vec!["/work/Docs-old".to_string()]);
+        let hits = db.search("payment due", 8).unwrap();
+        assert_eq!(hits.iter().map(|h| h.document_id.as_str()).collect::<Vec<_>>(), ["sibling"]);
     }
 
     #[test]

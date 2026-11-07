@@ -26,10 +26,19 @@ use crate::{
 
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
 
+/// A file the person attached to a chat. It is read on this device and kept only in memory, so it
+/// is gone when the app closes, and it is sent to Claude only when they ask a question with it.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub name: String,
+    pub blocks: Vec<crate::models::ParsedBlock>,
+}
+
 pub struct AppState {
     pub db: Arc<Database>,
     pub cloud: Arc<Cloud>,
     pub active_job: Mutex<Option<IndexJob>>,
+    pub attachments: Mutex<std::collections::HashMap<String, Attachment>>,
     cancel_indexing: AtomicBool,
 }
 
@@ -39,6 +48,7 @@ impl AppState {
             db: Arc::new(db),
             cloud: Arc::new(cloud),
             active_job: Mutex::new(None),
+            attachments: Mutex::new(std::collections::HashMap::new()),
             cancel_indexing: AtomicBool::new(false),
         }
     }
@@ -209,7 +219,20 @@ impl AppState {
     }
 
     fn index_file(&self, path: &Path) -> AppResult<()> {
-        if self.cancel_indexing.load(Ordering::SeqCst) {
+        self.index_file_with(path, &self.cancel_indexing)
+    }
+
+    /// Reads one file the person chose (for a workspace) into the local index, whether or not it is
+    /// inside an approved folder, and returns it. A running folder scan is not affected.
+    pub fn index_one(&self, path: &Path) -> AppResult<DocumentResource> {
+        self.index_file_with(path, &std::sync::atomic::AtomicBool::new(false))?;
+        self.db
+            .document_by_path(&path.to_string_lossy())?
+            .ok_or_else(|| AppError::Parser("the file could not be read".into()))
+    }
+
+    fn index_file_with(&self, path: &Path, cancel: &std::sync::atomic::AtomicBool) -> AppResult<()> {
+        if cancel.load(Ordering::SeqCst) {
             return Err(AppError::Cancelled);
         }
         let metadata =
@@ -249,9 +272,9 @@ impl AppState {
                 extension: extension.clone(),
                 bytes,
             },
-            &self.cancel_indexing,
+            cancel,
         )?;
-        if self.cancel_indexing.load(Ordering::SeqCst) {
+        if cancel.load(Ordering::SeqCst) {
             return Err(AppError::Cancelled);
         }
         let warning = (!result.warnings.is_empty()).then(|| result.warnings.join(" · "));
