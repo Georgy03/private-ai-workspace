@@ -339,3 +339,110 @@ async fn what_each_kind_of_person_can_see() {
     let tx = TenantTx::begin(&mut api, other.tenant).await.unwrap();
     assert!(agents::list_agents(&tx, &zed_admin).await.unwrap().is_empty());
 }
+
+/// Looks the report's document up by name in the search results it was shown.
+fn id_of(messages: &[Value], name: &str) -> String {
+    let results = serde_json::to_string(messages).unwrap();
+    let at = results.find(&format!("] {name}")).expect("the search showed the document");
+    let before = &results[..at];
+    let start = before.rfind("document_id: ").unwrap() + "document_id: ".len();
+    before[start..].to_string()
+}
+
+#[tokio::test]
+async fn a_finished_report_names_documents_lists_only_those_used_and_is_checked_against_what_was_read() {
+    let env = Env::new().await;
+    let f = firm(&env).await;
+    // A second file that matches the search but is never opened or mentioned.
+    let mut worker = env.worker().await;
+    let tx = TenantTx::begin(&mut worker, f.tenant).await.unwrap();
+    let other = tx
+        .upsert_document(&workspace_cloud::db::NewDocument {
+            connection_id: f.connection,
+            external_id: "ext-notes".into(),
+            name: "notes.docx".into(),
+            path: "/notes.docx".into(),
+            readable_by: vec!["user:alice".into()],
+        })
+        .await
+        .unwrap();
+    tx.add_chunk(other, 0, "The retreat schedule is in spring.").await.unwrap();
+    tx.commit().await.unwrap();
+
+    let alice = person(&f, "alice", &[]);
+    let agent = create(&env, &f, AgentSettings::default()).await;
+    let id = queued(&env, &alice, agent, "What is the retreat budget?").await;
+
+    let model = Scripted::new(|messages| match messages.len() {
+        1 => search("retreat budget"),
+        3 => {
+            let doc = id_of(messages, "retreat.docx");
+            reply(json!([{ "type": "tool_use", "id": "toolu_2", "name": "read_document", "input": { "document_id": doc } }]), "tool_use")
+        }
+        _ => {
+            let doc = id_of(messages, "retreat.docx");
+            text(&format!(
+                "# Report\n\nThe budget is **$5,000.00** (see Doc {}), the note says \"The retreat budget is 5000 dollars\", and we spent $7,777.77. Full ID: {doc}.",
+                &doc[..8]
+            ))
+        }
+    });
+    run(&env, model).await;
+
+    let t = task(&env, &alice, id).await.unwrap();
+    assert_eq!(t.status, "done", "{:?}", t.error);
+    let report = t.result.unwrap();
+    // Documents are named in words, never by ID.
+    assert!(report.contains("retreat.docx") && !report.contains("document_id"), "{report}");
+    let full = f.document.to_string();
+    assert!(!report.contains(&full) && !report.contains(&full[..8]), "{report}");
+    // Only the file that was read is listed; the other one only turned up in a search.
+    let sources = t.sources.unwrap();
+    let names: Vec<&str> = sources.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["retreat.docx"]);
+    // The figure that no document contains and the quotation that is there are told apart.
+    let checks = t.checks.unwrap();
+    assert_eq!(checks["figures_missing"], json!(["$7,777.77"]), "{checks}");
+    assert_eq!((checks["quotes_total"].as_u64(), checks["quotes_found"].as_u64()), (Some(1), Some(1)));
+    // An administrator sees neither the report nor its checks.
+    let admin = person(&f, "admin", &["firm_admin"]);
+    let seen = task(&env, &admin, id).await.unwrap();
+    assert!(seen.result.is_none() && seen.checks.is_none());
+}
+
+#[tokio::test]
+async fn an_agent_checks_arithmetic_with_the_calculator_and_its_results_count_as_evidence() {
+    let env = Env::new().await;
+    let f = firm(&env).await;
+    let alice = person(&f, "alice", &[]);
+    // Not offered any tools of its own: the calculator is still there.
+    let agent = create(&env, &f, AgentSettings { max_concurrent: Some(3), ..Default::default() }).await;
+    let id = queued(&env, &alice, agent, "Check the pens variance").await;
+
+    let model = Scripted::new(|messages| match messages.len() {
+        1 => reply(
+            json!([
+                { "type": "tool_use", "id": "toolu_1", "name": "calculate", "input": { "expression": "20 - 32.15", "label": "Pens variance" } },
+                { "type": "tool_use", "id": "toolu_2", "name": "calculate", "input": { "expression": "1 / 0" } },
+            ]),
+            "tool_use",
+        ),
+        _ => {
+            let results = serde_json::to_string(messages).unwrap();
+            assert!(results.contains("20 - 32.15 = -12.15"), "{results}");
+            assert!(results.contains("division by zero"), "{results}");
+            text("## Discrepancies found\n\n| Where | Says | Should be |\n|---|---|---|\n| Pens | -$12.15 | $20.00 |")
+        }
+    });
+    run(&env, model).await;
+
+    let t = task(&env, &alice, id).await.unwrap();
+    assert_eq!(t.status, "done", "{:?}", t.error);
+    // The computed difference is evidence; the figure nobody calculated or read is not.
+    let checks = t.checks.unwrap();
+    assert_eq!(checks["figures_missing"], json!(["$20.00"]), "{checks}");
+    // The history says a calculation happened, not what was calculated.
+    let summaries: Vec<&str> = t.events.iter().map(|e| e.summary.as_str()).collect();
+    assert_eq!(summaries.iter().filter(|s| **s == "Ran a calculation").count(), 2);
+    assert!(summaries.iter().all(|s| !s.contains("32.15")));
+}

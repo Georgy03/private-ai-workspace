@@ -1,24 +1,34 @@
 //! Cloud side of the multi-firm workspace. This crate holds the rules that keep one firm's data
 //! away from another's: who a request is for (`auth`) and how the database enforces it (`db`).
 
+pub mod actions;
+pub mod agent_checks;
 pub mod agent_runner;
 pub mod agents;
 pub mod agents_api;
 pub mod api;
 pub mod auth;
+pub mod browse;
+pub mod calc;
 pub mod connectors;
 pub mod db;
+pub mod drive_save;
 pub mod embed;
 pub mod extract;
 pub mod extract_process;
 pub mod jwks;
+pub mod kms;
 pub mod knowledge;
+pub mod mail;
 pub mod knowledge_api;
 pub mod knowledge_store;
 pub mod knowledge_worker;
 pub mod oauth;
 pub mod ocr;
 pub mod queue;
+pub mod retention;
+pub mod schedules;
+pub mod schedules_api;
 pub mod secrets;
 pub mod server;
 pub mod sync;
@@ -40,6 +50,8 @@ pub enum Error {
     Connector(connectors::ConnectorError),
     Embedding(String),
     Analysis(String),
+    /// Encrypting or opening a stored secret failed.
+    Crypto(String),
 }
 
 impl fmt::Display for Error {
@@ -57,6 +69,7 @@ impl fmt::Display for Error {
             Error::Connector(error) => write!(f, "connector: {error}"),
             Error::Embedding(reason) => write!(f, "embedding: {reason}"),
             Error::Analysis(reason) => write!(f, "analysis: {reason}"),
+            Error::Crypto(reason) => write!(f, "secret store: {reason}"),
         }
     }
 }

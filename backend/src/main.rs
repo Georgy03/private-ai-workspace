@@ -34,6 +34,23 @@ async fn migrate() -> workspace_cloud::Result<()> {
     Ok(())
 }
 
+/// `workspace-cloud provision-firm "Firm name"` creates a firm together with its own encryption key,
+/// and prints the firm's ID (the `custom:tenant_id` of its people in Cognito) and the key's ARN. Run
+/// it with the `app_provisioner` database login and AWS credentials that may create KMS keys.
+async fn provision_firm() -> workspace_cloud::Result<()> {
+    let name = std::env::args().nth(2).unwrap_or_default();
+    let settings = Settings::for_migration()?;
+    let pool = build_pool(&settings, 1)?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|error| workspace_cloud::Error::Config(format!("database: {error}")))?;
+    let keys = workspace_cloud::kms::AwsKms::from_env().await;
+    let (tenant, key) = workspace_cloud::kms::provision_firm(&conn, &keys, &name).await?;
+    println!("tenant_id={}\nkms_key_arn={key}", tenant.0);
+    Ok(())
+}
+
 /// `workspace-cloud worker` keeps connected sources up to date. Run it with the `app_worker`
 /// database login.
 async fn worker() -> workspace_cloud::Result<()> {
@@ -48,7 +65,7 @@ async fn worker() -> workspace_cloud::Result<()> {
         ));
     }
     let pool = build_pool(&settings, 8)?;
-    let secrets = secrets_from_env(settings.allow_insecure)?;
+    let secrets = secrets_from_env(settings.allow_insecure, &pool).await?;
     tracing::info!("worker started");
     // The file reader runs as its own restricted program. Without it, PDF and Office files
     // could only be found by name, so the worker refuses to start rather than quietly do less.
@@ -111,7 +128,7 @@ fn load_analyzer() -> Option<Arc<dyn workspace_cloud::knowledge::Analyzer>> {
             Some(Arc::new(analyzer))
         }
         None => {
-            tracing::warn!("company knowledge is unavailable: ANTHROPIC_API_KEY is not set");
+            tracing::warn!("company knowledge is unavailable here: it needs ANTHROPIC_API_KEY, and the direct Claude API is only allowed for local development (ALLOW_INSECURE=1)");
             None
         }
     }
@@ -122,7 +139,7 @@ fn load_agent_model() -> Option<Arc<dyn workspace_cloud::agent_runner::AgentMode
     match workspace_cloud::agent_runner::ClaudeAgentModel::from_env() {
         Some(model) => Some(Arc::new(model)),
         None => {
-            tracing::warn!("shared agents cannot run: ANTHROPIC_API_KEY is not set");
+            tracing::warn!("shared agents cannot run here: they need ANTHROPIC_API_KEY, and the direct Claude API is only allowed for local development (ALLOW_INSECURE=1)");
             None
         }
     }
@@ -132,6 +149,7 @@ async fn run() -> workspace_cloud::Result<()> {
     match std::env::args().nth(1).as_deref() {
         Some("migrate") => return migrate().await,
         Some("worker") => return worker().await,
+        Some("provision-firm") => return provision_firm().await,
         Some("download-model") => {
             // Fetches the meaning-search model once, so the server and the worker do not both
             // try to download it at the same moment.
@@ -157,12 +175,13 @@ async fn run() -> workspace_cloud::Result<()> {
             "connectors are switched off: OAUTH_STATE_KEY and provider credentials are not set"
         );
     }
+    let secrets = secrets_from_env(settings.allow_insecure, &pool).await?;
     let app = api::router(AppState {
         verifier,
         jwks: Some(jwks),
         pool,
         oauth: Arc::new(oauth),
-        secrets: secrets_from_env(settings.allow_insecure)?,
+        secrets,
         embedder: load_embedder(),
     });
     let listener = tokio::net::TcpListener::bind(&settings.bind)

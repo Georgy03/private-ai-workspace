@@ -10,7 +10,9 @@ use uuid::Uuid;
 use crate::{Result, auth::Principal, db::TenantTx};
 
 /// The tools an agent may be given. All of them only read.
-pub const TOOLS: &[&str] = &["search_documents", "read_document", "lookup_knowledge"];
+/// What an agent may be given. The first three only read. The last two only prepare something for
+/// the person to review and send or book themselves: an agent can never send or book anything.
+pub const TOOLS: &[&str] = &["search_documents", "read_document", "lookup_knowledge", "prepare_email", "prepare_meeting"];
 pub const EFFORTS: &[&str] = &["low", "medium", "high"];
 /// "standard" is the everyday model; "advanced" is the stronger, dearer one.
 pub const MODELS: &[&str] = &["standard", "advanced"];
@@ -74,10 +76,10 @@ impl AgentSettings {
         if self.status.as_deref().is_some_and(|s| !["available", "paused", "archived"].contains(&s)) {
             return Some("unknown status");
         }
-        if let Some(audience) = &self.audience {
-            if audience.is_empty() || audience.len() > 50 || audience.iter().any(|a| a.is_empty() || a.len() > 200) {
-                return Some("the audience must name 1 to 50 people or groups, or everyone");
-            }
+        if let Some(audience) = &self.audience
+            && (audience.is_empty() || audience.len() > 50 || audience.iter().any(|a| a.is_empty() || a.len() > 200))
+        {
+            return Some("the audience must name 1 to 50 people or groups, or everyone");
         }
         if self.monthly_budget_micros.flatten().is_some_and(|b| !(0..=100_000_000_000).contains(&b)) {
             return Some("the budget is out of range");
@@ -144,7 +146,7 @@ fn agent_view(row: &tokio_postgres::Row, with_instructions: bool) -> AgentView {
 }
 
 /// Whether a person may give an agent work.
-fn allowed(audience: &[String], principal: &Principal) -> bool {
+pub(crate) fn allowed(audience: &[String], principal: &Principal) -> bool {
     let readers = principal.readers();
     audience.iter().any(|entry| entry == "everyone" || readers.contains(entry))
 }
@@ -201,15 +203,15 @@ pub async fn update_agent(
         return Ok(false);
     };
     let mut version: i32 = current.get(0);
-    if let Some(spec) = spec {
-        if current_spec(tx, id).await?.as_ref() != Some(spec) {
-            let next: i32 = sql
-                .query_one("SELECT COALESCE(max(version), 0) + 1 FROM agent_versions WHERE agent_id = $1", &[&id])
-                .await?
-                .get(0);
-            insert_version(tx, id, next, spec, by, note).await?;
-            version = next;
-        }
+    if let Some(spec) = spec
+        && current_spec(tx, id).await?.as_ref() != Some(spec)
+    {
+        let next: i32 = sql
+            .query_one("SELECT COALESCE(max(version), 0) + 1 FROM agent_versions WHERE agent_id = $1", &[&id])
+            .await?
+            .get(0);
+        insert_version(tx, id, next, spec, by, note).await?;
+        version = next;
     }
     sql.execute(
         "UPDATE agents SET current_version = $2,
@@ -431,6 +433,25 @@ pub struct TaskView {
     pub result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sources: Option<Value>,
+    /// How the report held up against the documents the agent read. Private like the report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checks: Option<Value>,
+    /// Set for a report made by a schedule: waiting for its owner, approved or rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_status: Option<String>,
+    /// The owner's own corrected version of the report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited_result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<Uuid>,
+    /// When the work is due to be deleted, if it will be.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deletes_epoch: Option<f64>,
+    /// What the owner said when asked: keep it, or let it run out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention_choice: Option<String>,
+    /// Its content has been deleted; only the dates and cost remain.
+    pub deleted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -439,27 +460,42 @@ pub struct TaskView {
 
 const TASK_COLUMNS: &str = "t.id, t.agent_id, v.name, t.requested_by, t.title, t.status, t.turns, t.cost_micros,
         EXTRACT(EPOCH FROM t.created_at)::float8, EXTRACT(EPOCH FROM t.started_at)::float8,
-        EXTRACT(EPOCH FROM t.finished_at)::float8, t.instruction, t.result, t.sources, t.error";
+        EXTRACT(EPOCH FROM t.finished_at)::float8, t.instruction, t.result, t.sources, t.error, t.checks,
+        t.review_status, t.edited_result, t.schedule_id,
+        EXTRACT(EPOCH FROM t.retention_until)::float8, t.retention_choice,
+        COALESCE(t.deleted_at IS NOT NULL OR t.retention_until <= now(), false)";
 const TASK_FROM: &str = "FROM agent_tasks t JOIN agent_versions v
         ON v.tenant_id = t.tenant_id AND v.agent_id = t.agent_id AND v.version = t.agent_version";
 
 fn task_view(row: &tokio_postgres::Row, own: bool) -> TaskView {
+    let gone: bool = row.get(21);
+    // What a task asked, found and wrote is private to its owner. Others, administrators included,
+    // see that it happened, when, and what it cost: not even its title, which is the request's start.
+    let title = if gone { "Deleted report".to_string() } else if own { row.get(4) } else { "Task".to_string() };
+    let keep = own && !gone;
     TaskView {
         id: row.get(0),
         agent_id: row.get(1),
         agent_name: row.get(2),
         requested_by: row.get(3),
-        title: row.get(4),
+        title,
         status: row.get(5),
         turns: row.get(6),
         cost_micros: row.get(7),
         created_epoch: row.get(8),
         started_epoch: row.get(9),
         finished_epoch: row.get(10),
-        instruction: own.then(|| row.get(11)),
-        result: if own { row.get(12) } else { None },
-        sources: own.then(|| row.get(13)),
-        error: row.get(14),
+        instruction: keep.then(|| row.get(11)),
+        result: if keep { row.get(12) } else { None },
+        sources: keep.then(|| row.get(13)),
+        error: if gone { None } else { row.get(14) },
+        checks: if keep { row.get(15) } else { None },
+        review_status: if own { row.get(16) } else { None },
+        edited_result: if keep { row.get(17) } else { None },
+        schedule_id: row.get(18),
+        deletes_epoch: if own && !gone { row.get(19) } else { None },
+        retention_choice: if own { row.get(20) } else { None },
+        deleted: gone,
         events: Vec::new(),
     }
 }
@@ -482,6 +518,8 @@ pub async fn list_tasks(tx: &TenantTx<'_>, principal: &Principal, everyone: bool
             // The list never carries the long text, only the title.
             view.result = None;
             view.sources = None;
+            view.checks = None;
+            view.edited_result = None;
             view
         })
         .collect())
@@ -502,13 +540,32 @@ pub async fn get_task(tx: &TenantTx<'_>, principal: &Principal, id: Uuid) -> Res
         return Ok(None);
     }
     let mut view = task_view(&row, own);
-    view.events = tx
-        .sql()
-        .query("SELECT kind, summary, EXTRACT(EPOCH FROM at)::float8 FROM agent_task_events WHERE task_id = $1 ORDER BY id", &[&id])
-        .await?
-        .into_iter()
-        .map(|row| EventView { kind: row.get(0), summary: row.get(1), epoch: row.get(2) })
-        .collect();
+    if !view.deleted {
+        view.events = tx
+            .sql()
+            .query("SELECT kind, summary, EXTRACT(EPOCH FROM at)::float8 FROM agent_task_events WHERE task_id = $1 ORDER BY id", &[&id])
+            .await?
+            .into_iter()
+            .map(|row| {
+                let kind: String = row.get(0);
+                // The owner sees what was read; anyone else sees only that work happened, because a
+                // file's name can say more than the person looking may be allowed to know.
+                let summary: String = if own {
+                    row.get(1)
+                } else {
+                    match kind.as_str() {
+                        "tool" => "Used a tool".to_string(),
+                        "created" => "Task created".to_string(),
+                        "cancelled" => "Stopped".to_string(),
+                        "failed" => "Failed".to_string(),
+                        "started" => "Started working".to_string(),
+                        _ => "Finished".to_string(),
+                    }
+                };
+                EventView { kind, summary, epoch: row.get(2) }
+            })
+            .collect();
+    }
     Ok(Some(view))
 }
 
@@ -517,7 +574,7 @@ pub async fn cancel_task(tx: &TenantTx<'_>, principal: &Principal, id: Uuid) -> 
     let sql = tx.sql();
     let changed = sql
         .execute(
-            "UPDATE agent_tasks SET status = 'cancelled', finished_at = now()
+            "UPDATE agent_tasks SET status = 'cancelled', finished_at = now(), retention_until = agent_retention_until()
              WHERE id = $1 AND status IN ('queued', 'running') AND ($2 OR requested_by = $3)",
             &[&id, &principal.is_admin(), &principal.user],
         )
@@ -528,4 +585,47 @@ pub async fn cancel_task(tx: &TenantTx<'_>, principal: &Principal, id: Uuid) -> 
     sql.execute("DELETE FROM agent_queue WHERE task_id = $1", &[&id]).await?;
     event(tx, id, "cancelled", &format!("Stopped by {}", principal.user)).await?;
     Ok(true)
+}
+
+/// Finished scheduled reports waiting for this person's decision, newest first.
+pub async fn inbox(tx: &TenantTx<'_>, principal: &Principal) -> Result<Vec<TaskView>> {
+    let rows = tx
+        .sql()
+        .query(
+            &format!("SELECT {TASK_COLUMNS} {TASK_FROM} WHERE t.requested_by = $1 AND t.review_status = 'pending' AND t.deleted_at IS NULL
+               AND (t.retention_until IS NULL OR t.retention_until > now()) ORDER BY t.finished_at DESC LIMIT 50"),
+            &[&principal.user],
+        )
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let mut view = task_view(row, true);
+            view.result = None;
+            view.sources = None;
+            view.checks = None;
+            view.edited_result = None;
+            view
+        })
+        .collect())
+}
+
+/// Several of a person's own tasks by ID, newest deadline first, without their long text.
+pub async fn task_views_by_ids(tx: &TenantTx<'_>, principal: &Principal, ids: &[Uuid]) -> Result<Vec<TaskView>> {
+    let rows = tx
+        .sql()
+        .query(&format!("SELECT {TASK_COLUMNS} {TASK_FROM} WHERE t.id = ANY($1) AND t.requested_by = $2 ORDER BY t.retention_until"), &[&ids, &principal.user])
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let mut view = task_view(row, true);
+            view.result = None;
+            view.sources = None;
+            view.checks = None;
+            view.edited_result = None;
+            view.instruction = None;
+            view
+        })
+        .collect())
 }

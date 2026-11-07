@@ -75,6 +75,11 @@ async fn harness(enabled: bool) -> Harness {
         OAuthSettings {
             microsoft: Some(microsoft),
             google: None,
+            dropbox: None,
+            docusign: None,
+        outlook_mail: None,
+        quickbooks: None,
+        zoom: None,
             redirect_uri: REDIRECT.into(),
             state_key: STATE_KEY.to_vec(),
         }
@@ -788,6 +793,9 @@ async fn the_connector_list_says_which_connectors_this_server_offers() {
     // The test server is set up for Microsoft only.
     assert_eq!(by_kind("microsoft365")["available"], true);
     assert_eq!(by_kind("google_drive")["available"], false);
+    // Dropbox and DocuSign are offered too, and unavailable here for the same reason.
+    assert_eq!(by_kind("dropbox")["available"], false);
+    assert_eq!(by_kind("docusign")["available"], false);
     assert!(
         by_kind("google_drive")["name"]
             .as_str()

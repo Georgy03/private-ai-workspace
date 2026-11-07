@@ -21,6 +21,11 @@
 # While it runs it writes backend/.env.devcloud so `npm run tauri:dev:cloud` can point the desktop
 # app at this server. The file is deleted when the script ends.
 #
+# Add --neon (with `ui`) to use the Neon database in backend/.env.neon instead of a throwaway one: the
+# migrations run there, the API runs as prism_api and the worker as prism_worker through Neon's pooled
+# address, over verified TLS. The data stays in Neon between runs, so --neon implies --keep for the
+# firm identity and the saved access on this machine (backend/.dev-state).
+#
 # By default everything is deleted when the script stops. Add --keep to keep the database, the
 # saved Google/Microsoft access and the firm identity in backend/.dev-state between runs, so a
 # restart does not lose a sync. That leaves a plain-text copy of your synced files on this disk;
@@ -45,11 +50,19 @@ case "${1:-}" in
   ui) KIND=""; PROVIDER="UI"; SEED=0 ;;
   *) echo "usage: scripts/dev-connect.sh microsoft|google|ui|sample [--check] [--keep]   |   forget"; exit 2 ;;
 esac
-CHECK_ONLY=0; KEEP="${DEV_KEEP:-0}"
+CHECK_ONLY=0; KEEP="${DEV_KEEP:-0}"; NEON=0
 for arg in "${@:2}"; do
   [ "$arg" = "--check" ] && CHECK_ONLY=1
   [ "$arg" = "--keep" ] && KEEP=1
+  [ "$arg" = "--neon" ] && NEON=1
 done
+if [ "$NEON" = 1 ]; then
+  [ "$KIND" = "" ] && [ "$SEED" = 0 ] || { echo "--neon works with the ui mode only."; exit 2; }
+  [ -f .env.neon ] || { echo "backend/.env.neon is missing (the Neon addresses and logins)."; exit 1; }
+  set -a; . ./.env.neon; set +a
+  : "${NEON_OWNER_URL:?}" "${NEON_POOLED_HOST:?}" "${NEON_DB:?}" "${NEON_API_PASSWORD:?}" "${NEON_WORKER_PASSWORD:?}" "${NEON_PROV_PASSWORD:?}"
+  KEEP=1
+fi
 API_PORT=8080
 if lsof -nP -iTCP:$API_PORT -sTCP:LISTEN >/dev/null 2>&1; then
   echo "Port $API_PORT is already in use. Stop whatever is using it and try again."; exit 1
@@ -70,13 +83,30 @@ fi
 cleanup() {
   rm -f .env.devcloud
   for pid in "${PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done
-  "$PGBIN/pg_ctl" -D "$DATA" stop -m "$STOP_MODE" >/dev/null 2>&1 || true
+  [ "$NEON" = 1 ] || "$PGBIN/pg_ctl" -D "$DATA" stop -m "$STOP_MODE" >/dev/null 2>&1 || true
   rm -rf "$SP"
 }
 trap cleanup EXIT
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
 # ---- database ----
+BIN=target/debug/workspace-cloud
+if [ "$NEON" = 1 ]; then
+  # Neon: the owner login only runs the migrations, over the direct address. The running services use
+  # their own limited logins through the pooled address, and the database certificate is checked.
+  NEON_SSL="sslmode=verify-full&sslrootcert=system"
+  export DATABASE_CA_FILE="${DATABASE_CA_FILE:-/etc/ssl/cert.pem}"
+  neon_url() { echo "postgresql://$1:$2@$NEON_POOLED_HOST/$NEON_DB?sslmode=require"; }
+  API_DB_URL=$(neon_url prism_api "$NEON_API_PASSWORD"); WORKER_DB_URL=$(neon_url prism_worker "$NEON_WORKER_PASSWORD")
+  $BIN download-model >/dev/null 2>&1 || echo "Note: the meaning-search model could not be downloaded; search will match words only."
+  # Pending migrations are tried on a temporary copy of the database before production (scripts/neon-migrate.sh).
+  scripts/neon-migrate.sh >"$SP/neon-migrate.log" 2>&1 || { echo "The migrations could not be applied to Neon:"; cat "$SP/neon-migrate.log"; exit 1; }
+  if [ -f "$STATE/tenant" ]; then TID=$(cat "$STATE/tenant"); else TID=$(python3 -c 'import uuid; print(uuid.uuid4())'); echo "$TID" > "$STATE/tenant"; fi
+  $PGBIN/psql -q "postgresql://prism_prov:$NEON_PROV_PASSWORD@$NEON_POOLED_HOST/$NEON_DB?$NEON_SSL" -c "INSERT INTO tenants(id,name) VALUES ('$TID','Dev Firm') ON CONFLICT (id) DO NOTHING"
+  # A sync that was stopped part way still holds its claim for up to half an hour; release it.
+  $PGBIN/psql -q "postgresql://prism_worker:$NEON_WORKER_PASSWORD@$NEON_POOLED_HOST/$NEON_DB?$NEON_SSL" -c "BEGIN; SELECT set_config('app.tenant_id','$TID',true); UPDATE sync_queue SET claimed_until = NULL, run_after = now(); COMMIT;" >/dev/null
+  echo "Using the Neon database (migrations are up to date)."
+else
 PGPORT=$(free_port)
 [ -f "$DATA/PG_VERSION" ] || "$PGBIN/initdb" -D "$DATA" -U postgres --auth=trust -E UTF8 >/dev/null
 # A kept database may still be running from an unclean stop; shut that down before starting.
@@ -84,7 +114,6 @@ PGPORT=$(free_port)
 "$PGBIN/pg_ctl" -D "$DATA" -o "-p $PGPORT -c listen_addresses=127.0.0.1 -k $SP" -w start >/dev/null
 PSQL="$PGBIN/psql -h 127.0.0.1 -p $PGPORT -q -U postgres"
 $PSQL -tAc "SELECT 1 FROM pg_database WHERE datname = 'dev'" | grep -q 1 || $PSQL -c "CREATE DATABASE dev"
-BIN=target/debug/workspace-cloud
 # The meaning-search model is fetched once, here, so the server and the worker do not both try to
 # download it at the same moment. If it cannot be fetched, search falls back to matching words.
 $BIN download-model >/dev/null 2>&1 || echo "Note: the meaning-search model could not be downloaded; search will match words only."
@@ -103,6 +132,7 @@ PGPASSWORD=pw $PGBIN/psql -h 127.0.0.1 -p $PGPORT -q -U dev_prov -d dev -c "INSE
 $PSQL -d dev -c "UPDATE sync_queue SET claimed_until = NULL, run_after = now()"
 QUERY="$PSQL -d dev -At"
 
+fi
 # ---- stand-in for the app's own sign-in (the real one is Cognito) ----
 # In keep mode the stand-in sign-in keeps its address, so a desktop app that is already open still
 # holds a token the restarted server accepts.
@@ -132,9 +162,16 @@ export ALLOW_INSECURE=1 DEV_SECRETS_DIR="$SECRETS"
 export OAUTH_STATE_KEY="$(openssl rand -base64 32)"
 export OAUTH_REDIRECT_URI="http://localhost:$API_PORT/oauth/callback"
 export MICROSOFT_CLIENT_ID MICROSOFT_CLIENT_SECRET GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
-BIND=127.0.0.1:$API_PORT DATABASE_URL="host=127.0.0.1 port=$PGPORT user=dev_api password=pw dbname=dev" \
+# Optional: Dropbox and DocuSign appear in the app once these are in backend/.env.local.
+export DROPBOX_CLIENT_ID DROPBOX_CLIENT_SECRET DOCUSIGN_CLIENT_ID DOCUSIGN_CLIENT_SECRET DOCUSIGN_ENVIRONMENT QUICKBOOKS_CLIENT_ID QUICKBOOKS_CLIENT_SECRET QUICKBOOKS_ENVIRONMENT ZOOM_CLIENT_ID ZOOM_CLIENT_SECRET ZOOM_REDIRECT_URI
+if [ "$NEON" = 1 ]; then
+  API_URL_FOR_DB="$API_DB_URL"; WORKER_URL_FOR_DB="$WORKER_DB_URL"
+else
+  API_URL_FOR_DB="host=127.0.0.1 port=$PGPORT user=dev_api password=pw dbname=dev"; WORKER_URL_FOR_DB="host=127.0.0.1 port=$PGPORT user=dev_worker password=pw dbname=dev"
+fi
+BIND=127.0.0.1:$API_PORT DATABASE_URL="$API_URL_FOR_DB" \
   COGNITO_ISSUER="http://127.0.0.1:$IDPPORT/pool" COGNITO_CLIENT_ID=dev-client $BIN >"$SP/api.log" 2>&1 & PIDS+=($!)
-DATABASE_URL="host=127.0.0.1 port=$PGPORT user=dev_worker password=pw dbname=dev" $BIN worker >"$SP/worker.log" 2>&1 & PIDS+=($!)
+DATABASE_URL="$WORKER_URL_FOR_DB" $BIN worker >"$SP/worker.log" 2>&1 & PIDS+=($!)
 U=http://127.0.0.1:$API_PORT; TOKEN=$(cat "$SP/token")
 # The API loads the meaning-search model before it listens, which takes a few seconds.
 for _ in $(seq 1 60); do curl -s -m 2 -o /dev/null -f $U/readyz && break; sleep 1; done

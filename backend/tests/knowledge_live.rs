@@ -8,7 +8,7 @@ const LETTER: &str = "ENGAGEMENT LETTER\nMaple Roofing LLC will replace the roof
 #[tokio::test]
 #[ignore = "calls the Claude API"]
 async fn the_real_model_reads_a_document_and_every_quote_is_real() {
-    let analyzer = ClaudeAnalyzer::from_env().expect("set ANTHROPIC_API_KEY");
+    let analyzer = ClaudeAnalyzer::from_env().expect("set ANTHROPIC_API_KEY and ALLOW_INSECURE=1");
     let raw = analyzer
         .analyze("Engagement letter - Whitfield.docx", LETTER)
         .await
@@ -43,7 +43,7 @@ async fn the_real_model_reads_a_document_and_every_quote_is_real() {
 #[tokio::test]
 #[ignore = "calls the Claude API"]
 async fn the_real_model_describes_a_business_from_notes() {
-    let analyzer = ClaudeAnalyzer::from_env().expect("set ANTHROPIC_API_KEY");
+    let analyzer = ClaudeAnalyzer::from_env().expect("set ANTHROPIC_API_KEY and ALLOW_INSECURE=1");
     let input = ProfileInput {
         documents: vec![
             (

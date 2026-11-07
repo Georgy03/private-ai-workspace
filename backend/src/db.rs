@@ -29,6 +29,19 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (10, include_str!("../migrations/0010_embeddings.sql")),
     (11, include_str!("../migrations/0011_company_knowledge.sql")),
     (12, include_str!("../migrations/0012_agents.sql")),
+    (13, include_str!("../migrations/0013_agent_checks.sql")),
+    (14, include_str!("../migrations/0014_schedules.sql")),
+    (15, include_str!("../migrations/0015_retention.sql")),
+    (16, include_str!("../migrations/0016_more_connectors.sql")),
+    (17, include_str!("../migrations/0017_connection_scope.sql")),
+    (18, include_str!("../migrations/0018_agent_actions.sql")),
+    (19, include_str!("../migrations/0019_outlook_sending.sql")),
+    (20, include_str!("../migrations/0020_drive_saving.sql")),
+    (21, include_str!("../migrations/0021_quickbooks.sql")),
+    (22, include_str!("../migrations/0022_one_google_drive.sql")),
+    (23, include_str!("../migrations/0023_zoom.sql")),
+    (24, include_str!("../migrations/0024_zoom_meetings.sql")),
+    (25, include_str!("../migrations/0025_connector_secrets.sql")),
 ];
 
 /// Words that only make a question a question. The database drops ordinary stop words ("the",
@@ -270,6 +283,49 @@ impl<'a> TenantTx<'a> {
             .collect())
     }
 
+    /// The opening passages of each of these files that the principal may read, for when a question
+    /// about a report matches nothing in particular. The files are named by the report, but only the
+    /// ones this person can open today are returned.
+    pub async fn opening_passages(
+        &self,
+        principal: &Principal,
+        documents: &[Uuid],
+        per_file: i64,
+        limit: i64,
+    ) -> Result<Vec<Hit>> {
+        if principal.tenant != self.tenant {
+            return Err(Error::TenantMismatch);
+        }
+        let rows = self
+            .tx
+            .query(
+                "SELECT c.id, d.id, d.name, c.text, c.location ->> 'label',
+                        COALESCE(d.web_url,
+                                 CASE WHEN cn.kind = 'google_drive'
+                                      THEN 'https://drive.google.com/open?id=' || d.external_id END)
+                 FROM chunks c
+                 JOIN documents d ON d.tenant_id = c.tenant_id AND d.id = c.document_id
+                 JOIN connections cn ON cn.id = d.connection_id
+                 WHERE d.id = ANY($1) AND d.readable_by && $2::text[] AND c.ordinal < $3
+                 ORDER BY c.ordinal, d.id
+                 LIMIT $4",
+                &[&documents, &principal.readers(), &(per_file as i32), &limit],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Hit {
+                chunk_id: row.get(0),
+                document_id: row.get(1),
+                document_name: row.get(2),
+                text: row.get(3),
+                score: 0.0,
+                location_label: row.get(4),
+                web_url: row.get(5),
+            })
+            .collect())
+    }
+
     /// The whole text of one document, in order, when the principal may read it. The text is left
     /// out (and `too_long` set) when it is longer than `max_chars`, so a very long file is never
     /// loaded just to be refused. None when there is no such document or it is not theirs to read.
@@ -387,7 +443,7 @@ impl<'a> TenantTx<'a> {
             .tx
             .query_opt(
                 "SELECT kind, config, cursor, status,
-                        EXTRACT(EPOCH FROM now() - permissions_refreshed_at)::float8
+                        EXTRACT(EPOCH FROM now() - permissions_refreshed_at)::float8, visibility, owner
                  FROM connections WHERE id = $1",
                 &[&id],
             )
@@ -398,7 +454,20 @@ impl<'a> TenantTx<'a> {
             cursor: row.get(2),
             status: row.get(3),
             full_listing_age_secs: row.get(4),
+            visibility: row.get(5),
+            owner: row.get(6),
         }))
+    }
+
+    /// For a private connection, the one person its files are for. Called in the same transaction
+    /// as every write of a file, and it holds the setting still until that transaction ends, so
+    /// switching a connection to private waits for a write in progress and cannot be missed by one.
+    pub async fn private_owner(&self, connection: Uuid) -> Result<Option<String>> {
+        Ok(self
+            .tx
+            .query_opt("SELECT visibility, owner FROM connections WHERE id = $1 FOR SHARE", &[&connection])
+            .await?
+            .and_then(|row| (row.get::<_, String>(0) == "private").then(|| row.get::<_, Option<String>>(1)).flatten()))
     }
 
     /// The database clock as seconds since 1970, for marking the start of a full listing.
@@ -539,6 +608,19 @@ impl<'a> TenantTx<'a> {
             .execute(
                 "DELETE FROM documents WHERE connection_id = $1 AND external_id = $2",
                 &[&connection, &external_id],
+            )
+            .await?)
+    }
+
+    /// Removes everything below a folder, for providers that report a deleted folder as one event.
+    /// `prefix` is a folder path; only items inside it go, never a sibling that shares its start.
+    pub async fn delete_tree(&self, connection: Uuid, prefix: &str) -> Result<u64> {
+        let escaped = prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        Ok(self
+            .tx
+            .execute(
+                "DELETE FROM documents WHERE connection_id = $1 AND external_id LIKE $2 || '/%' ESCAPE '\\'",
+                &[&connection, &escaped],
             )
             .await?)
     }
@@ -875,6 +957,10 @@ pub struct ConnectionState {
     pub status: String,
     /// Seconds since a full listing last completed, or None if none has.
     pub full_listing_age_secs: Option<f64>,
+    /// "workspace" or "private".
+    pub visibility: String,
+    /// The person who connected it. Always set for a private connection.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -821,3 +821,37 @@ async fn the_overview_counts_what_is_known_and_what_still_needs_a_person() {
         (1, 1, 0, 2, 1)
     );
 }
+
+#[tokio::test]
+async fn what_was_learned_from_files_that_become_private_is_forgotten_and_private_files_are_never_read() {
+    let env = Env::new().await;
+    let firm = firm_with(&env, true).await;
+    let model = Scripted::new();
+    model.says("letter.docx", letter_extraction());
+    let pool = env.pool("t_worker", 4);
+    analyse_pass(&pool, &model).await.unwrap();
+    assert!(!entities_for(&env, &firm, "alice").await.is_empty());
+    assert_eq!(model.calls(), 1);
+
+    // The person who connected the source makes it private to themselves.
+    env.admin
+        .execute("UPDATE connections SET owner = 'alice', visibility = 'private' WHERE id = $1", &[&firm.connection])
+        .await
+        .unwrap();
+    analyse_pass(&pool, &model).await.unwrap();
+    // Nothing learned from it is left, in the lists or in the firm-wide counts and profile input.
+    assert!(entities_for(&env, &firm, "alice").await.is_empty());
+    assert!(facts_for(&env, &firm, "alice").await.is_empty());
+    let mut api = env.api().await;
+    let tx = TenantTx::begin(&mut api, firm.tenant).await.unwrap();
+    let overview = store::overview(&tx).await.unwrap();
+    assert_eq!((overview.documents_total, overview.documents_analysed, overview.facts_total, overview.relationships), (0, 0, 0, 0));
+    let (input, _) = store::profile_input(&tx).await.unwrap();
+    assert!(input.documents.is_empty() && input.entities.is_empty() && input.facts.is_empty());
+    drop(tx);
+
+    // And a private file is never sent to the model, even when it is new.
+    env.admin.execute("DELETE FROM document_analysis", &[]).await.unwrap();
+    analyse_pass(&pool, &model).await.unwrap();
+    assert_eq!(model.calls(), 1, "a private file was read for company knowledge");
+}

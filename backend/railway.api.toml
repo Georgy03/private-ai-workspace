@@ -1,0 +1,12 @@
+# Railway service "api". In the service's settings: Root Directory = backend, and Config as Code path =
+# /backend/railway.api.toml. Settings and secrets are variables on the service (see README.md).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# The image's default command is the API. It listens on the PORT Railway gives it.
+healthcheckPath = "/readyz"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

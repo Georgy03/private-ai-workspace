@@ -429,7 +429,7 @@ async fn application_roles_cannot_bypass_the_rules() {
                              'document_analysis','entities','entity_evidence','facts','fact_evidence',
                              'relationships','relationship_evidence','company_profile',
                              'agents','agent_versions','agent_tasks','agent_task_events',
-                             'agent_task_messages','agent_queue')",
+                             'agent_task_messages','agent_queue','agent_schedules','agent_schedule_clock','agent_purge_queue','agent_actions')",
             &[],
         )
         .await

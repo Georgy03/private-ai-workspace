@@ -374,6 +374,9 @@ impl ClaudeAnalyzer {
     /// From `ANTHROPIC_API_KEY`; `ANALYSIS_MODEL` picks the model (default Claude Haiku 5.5, which
     /// is cheap enough to read every document). None when there is no key.
     pub fn from_env() -> Option<Self> {
+        if !crate::server::direct_claude_api_allowed() {
+            return None;
+        }
         let key = std::env::var("ANTHROPIC_API_KEY")
             .ok()
             .filter(|key| !key.trim().is_empty())?;

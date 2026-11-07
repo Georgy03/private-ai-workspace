@@ -51,6 +51,37 @@ workspace-cloud worker    # keeps connected sources up to date; run as the app_w
 | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` | Azure app registration (multi-tenant) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Cloud OAuth client (web application) |
 
+## Deploying on Railway
+
+The `Dockerfile` builds one image holding the API, the worker, the file reader (`workspace-extract`), OCR
+(Tesseract and Poppler) and the meaning-search model. Railway runs it as two services from the same
+repository, each with Root Directory `backend`:
+
+| Service | Config as Code path | Command | Notes |
+|---|---|---|---|
+| `api` | `/backend/railway.api.toml` | the image's default (the API) | public domain, health check `/readyz`, listens on Railway's `PORT` |
+| `worker` | `/backend/railway.worker.toml` | `workspace-cloud worker` | no domain, at least 2 GB of memory |
+
+Variables for each are listed in `railway.env.example`. Never set `ALLOW_INSECURE`, and do not set
+`ANTHROPIC_API_KEY`: outside development the server refuses the direct Claude API, so agents and company
+knowledge stay off until the Bedrock path is built.
+
+Migrations are not run by the services. Run `scripts/neon-migrate.sh` from a trusted machine before a release
+that adds one: it tests them on a copy of the database first. To make a firm and its key, run
+`workspace-cloud provision-firm "Firm name"` with the provisioner's credentials (see above).
+
+Before this can run you need, outside Railway: the Cognito user pool (`infra/auth.tf`) with its issuer and app
+client ID, the AWS credentials for the token store, the firm key made by `provision-firm`, and the callback
+address registered with each provider. `.dockerignore` keeps `.env*`, `.dev-state` and build output out of the
+image and out of any upload.
+
+**Known gaps in this setup:** the file reader is limited by resource limits only. The architecture asks for it
+to run with no network and no view of the file system, which Railway's containers cannot enforce, so a hostile
+file that breaks the parser would run with the service's own network access. Run the reader somewhere that can
+isolate it before accepting files from people you do not know. The image has been checked in pieces (its
+Dockerfile lints clean, its OCR tools and certificates were tested, the code builds) but the full image build
+and a running deployment have not been tried.
+
 ## Trying it on a developer machine
 
 `scripts/dev-connect.sh ui --keep` starts the whole server (database, API, worker) locally with Google and
@@ -62,10 +93,53 @@ Google/Microsoft access and the firm identity stay in `backend/.dev-state`, so a
 That folder holds a **plain-text copy of your synced files**; it is ignored by git, and
 `scripts/dev-connect.sh forget` deletes it.
 
+## Connector tokens in production
+
+Outside development (`ALLOW_INSECURE` unset) the API and the worker keep each connection's refresh token
+in the `connector_secrets` table, encrypted. Each firm has its own AWS KMS key (`tenants.kms_key_arn`).
+To store a token, KMS makes a one-time data key under the firm's key; the token is encrypted with that
+(AES-256-GCM), and only the data key's encrypted form is stored. To read it, KMS must open the data key
+again. Every request carries an encryption context naming the firm and the secret, and the cipher signs
+the same facts, so a row copied to another firm or another name cannot be opened. A copy of the
+database alone holds nothing readable. A firm with no key cannot store tokens: nothing falls back to a
+shared key.
+
+Make a firm, and its key, with the provisioner's database login and AWS credentials that may create keys:
+
+```sh
+DATABASE_URL=<app_provisioner login> DATABASE_CA_FILE=... AWS_REGION=us-east-2 \
+  workspace-cloud provision-firm "Firm name"
+# prints tenant_id=<id> (the custom:tenant_id of the firm's people in Cognito) and kms_key_arn=...
+```
+
+It creates the key with rotation on, the alias `alias/prism-tenant-<id>` and the tags `app`
+(`prism-workspace`), `tenant` (the firm's ID, the convention `infra/iam.tf` uses) and `firm`, then the firm. If the firm cannot be saved the key is scheduled for deletion again.
+
+The API and worker need AWS credentials (a task role in AWS, or the standard `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_REGION` elsewhere) allowed only this:
+
+```json
+{ "Version": "2012-10-17", "Statement": [{
+  "Effect": "Allow",
+  "Action": ["kms:GenerateDataKey", "kms:Decrypt"],
+  "Resource": "arn:aws:kms:REGION:ACCOUNT:key/*",
+  "Condition": {
+    "StringEquals": { "aws:ResourceTag/app": "prism-workspace" },
+    "Null": { "kms:EncryptionContext:tenant_id": "false", "kms:EncryptionContext:secret": "false" },
+    "ForAllValues:StringEquals": { "kms:EncryptionContextKeys": ["tenant_id", "secret"] }
+  } }] }
+```
+
+The provisioner's credentials need `kms:CreateKey` and `kms:TagResource` (only with the `app` tag),
+`kms:EnableKeyRotation`, `kms:CreateAlias`, `kms:DescribeKey` and `kms:ScheduleKeyDeletion` (only on keys
+with that tag), and nothing else. It cannot use a key to encrypt or decrypt. Give the service and the
+provisioner different credentials. `infra/iam.tf` grants exactly these permissions to the API, worker and
+provisioner roles (`token_keys`, `provisioner`); it has been validated but never applied to an account.
+
 ## How connectors work
 
-An administrator approves read-only access at the provider; the server keeps the refresh token in
-the secret store, never in the database. The worker claims due connections from a queue, lists
+An administrator approves read-only access at the provider; the server keeps the refresh token only
+encrypted: in the database, under that firm's own AWS KMS key (see "Connector tokens in production"). The worker claims due connections from a queue, lists
 changes with the provider's change feed (Microsoft Graph delta, Google Drive changes), stores each
 file's text and who may read it, and saves its place after every page so a crash repeats a little
 work and skips nothing. Every few hours it lists everything again, which re-reads permissions and
@@ -104,8 +178,9 @@ again on the next sync.
 
 - **Only tested against stand-ins** for Microsoft Graph and Google Drive. Real services will differ in
   details (delta behaviour for permission changes, rate limits, which files show their permissions).
-- **No production secret store yet.** The AWS Secrets Manager store, reached through the per-firm
-  `tenant_access` role, is not written. Outside development the server refuses to save tokens.
+- **The token store is tested against a stand-in for KMS, not real AWS.** It uses the real AWS client and
+  the real KMS protocol, and the stand-in enforces encryption contexts, per-key wrapping and denied
+  keys, but it has not yet run against a real AWS account.
 - **Scanned PDFs, photos and old .doc/.ppt files are found by name only.** The file reader handles PDFs
   that have a text layer, plus .docx, .pptx and .xlsx/.xls. Scans need OCR, which is not built.
 - **Group sharing does not grant access yet.** A file shared only with a group (an Entra group or a

@@ -45,7 +45,7 @@ async fn overview(
     Ok(Json(json!({
         "enabled": enabled,
         // Whether this server has a model to read documents with.
-        "analysis_available": std::env::var("ANTHROPIC_API_KEY").is_ok_and(|key| !key.trim().is_empty()),
+        "analysis_available": crate::server::direct_claude_api_allowed() && std::env::var("ANTHROPIC_API_KEY").is_ok_and(|key| !key.trim().is_empty()),
         "stale_after_days": store::STALE_AFTER_DAYS,
         "overview": overview,
         "profile": profile,

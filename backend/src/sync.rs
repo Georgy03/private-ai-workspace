@@ -179,9 +179,11 @@ pub async fn sync_connection(
         };
 
         let mut removed = Vec::new();
+        let mut removed_trees = Vec::new();
         for change in &page.changes {
             match change {
                 Change::Delete(id) => removed.push(id.clone()),
+                Change::DeleteTree(prefix) => removed_trees.push(prefix.clone()),
                 Change::Upsert(file) => {
                     match store_file(
                         pool, tenant, connection, connector, extractor, file, &mut stats,
@@ -213,6 +215,9 @@ pub async fn sync_connection(
         let tx = begin(&mut conn, tenant).await?;
         for id in &removed {
             stats.removed += tx.delete_document(connection, id).await? as u32;
+        }
+        for prefix in &removed_trees {
+            stats.removed += tx.delete_tree(connection, prefix).await? as u32;
         }
         tx.set_cursor(connection, Some(&page.cursor)).await?;
         tx.commit().await?;
@@ -354,6 +359,15 @@ async fn read_file(
     }
 }
 
+/// A private connection's files are for the person who connected it, whatever the provider says
+/// about who else may open them. Every other connection keeps the provider's own list.
+async fn only_the_owner(tx: &crate::db::TenantTx<'_>, connection: Uuid, provider_readers: Vec<String>) -> Result<Vec<String>> {
+    Ok(match tx.private_owner(connection).await? {
+        Some(owner) => vec![format!("user:{owner}")],
+        None => provider_readers,
+    })
+}
+
 async fn store_file(
     pool: &Pool,
     tenant: TenantId,
@@ -388,6 +402,7 @@ async fn store_file(
     }) {
         let mut conn = checkout(pool).await?;
         let tx = begin(&mut conn, tenant).await?;
+        let readers = only_the_owner(&tx, connection, readers).await?;
         tx.refresh_document(
             connection,
             &file.external_id,
@@ -412,6 +427,7 @@ async fn store_file(
 
     let mut conn = checkout(pool).await?;
     let tx = begin(&mut conn, tenant).await?;
+    let readers = only_the_owner(&tx, connection, readers).await?;
     let id = tx
         .store_document(&StoredDocument {
             connection_id: connection,

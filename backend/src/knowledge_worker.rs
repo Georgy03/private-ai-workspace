@@ -41,6 +41,11 @@ pub async fn analyse_pass(pool: &Pool, analyzer: &dyn Analyzer) -> Result<usize>
         let pending = {
             let mut conn = queue::checkout(pool).await?;
             let tx = TenantTx::begin(&mut conn, tenant).await?;
+            // Whatever was learned from a file that has since become private to one person goes.
+            if store::forget_private(&tx).await? > 0 {
+                tx.commit().await?;
+                continue;
+            }
             if !store::analysis_enabled(&tx).await? {
                 continue;
             }

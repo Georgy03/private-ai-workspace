@@ -24,6 +24,17 @@ const STATE_LIFETIME_SECS: u64 = 600;
 pub enum Kind {
     Microsoft365,
     GoogleDrive,
+    Dropbox,
+    DocuSign,
+    /// A person's Outlook mailbox, connected only so the emails an agent prepared can be sent from it
+    /// after they have been read. It reads no files and is never synced.
+    OutlookMail,
+    /// A QuickBooks Online company: its records and reports are indexed. Read only, and visible
+    /// only to the person who connected it.
+    QuickBooks,
+    /// A person's Zoom account, connected only to create the meetings they approve. It reads no
+    /// meetings or recordings and is never synced.
+    Zoom,
 }
 
 impl Kind {
@@ -31,6 +42,11 @@ impl Kind {
         match value {
             "microsoft365" => Some(Kind::Microsoft365),
             "google_drive" => Some(Kind::GoogleDrive),
+            "dropbox" => Some(Kind::Dropbox),
+            "docusign" => Some(Kind::DocuSign),
+            "outlook_mail" => Some(Kind::OutlookMail),
+            "quickbooks" => Some(Kind::QuickBooks),
+            "zoom" => Some(Kind::Zoom),
             _ => None,
         }
     }
@@ -39,7 +55,17 @@ impl Kind {
         match self {
             Kind::Microsoft365 => "microsoft365",
             Kind::GoogleDrive => "google_drive",
+            Kind::Dropbox => "dropbox",
+            Kind::DocuSign => "docusign",
+            Kind::OutlookMail => "outlook_mail",
+            Kind::QuickBooks => "quickbooks",
+            Kind::Zoom => "zoom",
         }
+    }
+
+    /// Whether files are read from it. A mailbox connected for sending is not.
+    pub fn syncs_files(self) -> bool {
+        !matches!(self, Kind::OutlookMail | Kind::Zoom)
     }
 }
 
@@ -52,9 +78,24 @@ pub struct ProviderConfig {
     pub scopes: Vec<String>,
     /// Base URL of the provider's file API (Graph or Drive).
     pub api_base: String,
+    /// Sent along with the authorization request, e.g. Dropbox's `token_access_type=offline`.
+    pub extra_auth_params: Vec<(String, String)>,
+    /// The provider wants the client ID and secret in an `Authorization: Basic` header when the
+    /// code or a refresh token is exchanged, not in the form (DocuSign).
+    pub basic_auth: bool,
+    /// Where to ask who just signed in, for providers whose API address depends on the account.
+    pub userinfo_url: Option<String>,
+    /// This provider's own return address after sign-in, when it cannot use the shared one (Zoom
+    /// refuses http://localhost, so in development it goes through an https tunnel).
+    pub redirect_uri: Option<String>,
 }
 
 impl ProviderConfig {
+    /// Where the provider sends the person back after sign-in.
+    pub fn redirect<'a>(&'a self, shared: &'a str) -> &'a str {
+        self.redirect_uri.as_deref().unwrap_or(shared)
+    }
+
     pub fn microsoft(client_id: String, client_secret: String) -> Self {
         Self {
             client_id,
@@ -68,6 +109,10 @@ impl ProviderConfig {
                 .map(String::from)
                 .to_vec(),
             api_base: crate::connectors::microsoft::GRAPH_BASE.into(),
+            extra_auth_params: Vec::new(),
+            basic_auth: false,
+            userinfo_url: None,
+            redirect_uri: None,
         }
     }
 
@@ -77,8 +122,94 @@ impl ProviderConfig {
             client_secret,
             auth_url: "https://accounts.google.com/o/oauth2/v2/auth".into(),
             token_url: "https://oauth2.googleapis.com/token".into(),
-            scopes: vec!["https://www.googleapis.com/auth/drive.readonly".into()],
+            // Reading every file, and adding the files a person approves saving (drive.file reaches only
+            // files this app created). The server only ever reads; saving happens only from the
+            // approval route, for the person who connected.
+            scopes: vec!["https://www.googleapis.com/auth/drive.readonly".into(), "https://www.googleapis.com/auth/drive.file".into()],
             api_base: crate::connectors::google::DRIVE_BASE.into(),
+            extra_auth_params: Vec::new(),
+            basic_auth: false,
+            userinfo_url: None,
+            redirect_uri: None,
+        }
+    }
+
+    /// Sending mail as the signed-in person, and nothing else: no reading of the mailbox.
+    pub fn outlook_mail(client_id: String, client_secret: String) -> Self {
+        Self {
+            scopes: ["offline_access", "Mail.Send", "User.Read"].map(String::from).to_vec(),
+            ..Self::microsoft(client_id, client_secret)
+        }
+    }
+
+    /// `production` is the real service; otherwise Intuit's sandbox, which holds only test companies.
+    pub fn quickbooks(client_id: String, client_secret: String, production: bool) -> Self {
+        Self {
+            client_id,
+            client_secret,
+            auth_url: "https://appcenter.intuit.com/connect/oauth2".into(),
+            token_url: "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer".into(),
+            // Read access to the books. QuickBooks has no read-only accounting scope: this one also
+            // allows changes, which this server never makes.
+            scopes: vec!["com.intuit.quickbooks.accounting".into()],
+            api_base: if production { "https://quickbooks.api.intuit.com" } else { "https://sandbox-quickbooks.api.intuit.com" }.into(),
+            extra_auth_params: Vec::new(),
+            basic_auth: true,
+            userinfo_url: None,
+            redirect_uri: None,
+        }
+    }
+
+    /// Creating meetings in the person's own Zoom. Zoom's permissions are chosen when the app is set up
+    /// on the Zoom Marketplace, not in the sign-in link, so none are asked for here.
+    pub fn zoom(client_id: String, client_secret: String) -> Self {
+        Self {
+            client_id,
+            client_secret,
+            auth_url: "https://zoom.us/oauth/authorize".into(),
+            token_url: "https://zoom.us/oauth/token".into(),
+            scopes: Vec::new(),
+            api_base: "https://api.zoom.us".into(),
+            extra_auth_params: Vec::new(),
+            basic_auth: true,
+            userinfo_url: None,
+            redirect_uri: None,
+        }
+    }
+
+    pub fn dropbox(client_id: String, client_secret: String) -> Self {
+        Self {
+            client_id,
+            client_secret,
+            auth_url: "https://www.dropbox.com/oauth2/authorize".into(),
+            token_url: "https://api.dropboxapi.com/oauth2/token".into(),
+            // Names, contents and who a file is shared with: nothing that can change a file.
+            scopes: ["files.metadata.read", "files.content.read", "sharing.read", "account_info.read"].map(String::from).to_vec(),
+            api_base: crate::connectors::dropbox::API_BASE.into(),
+            // Without this Dropbox returns no refresh token.
+            extra_auth_params: vec![("token_access_type".into(), "offline".into())],
+            basic_auth: false,
+            userinfo_url: None,
+            redirect_uri: None,
+        }
+    }
+
+    /// `demo` is DocuSign's developer sandbox; otherwise the real service.
+    pub fn docusign(client_id: String, client_secret: String, demo: bool) -> Self {
+        let host = if demo { "account-d.docusign.com" } else { "account.docusign.com" };
+        Self {
+            client_id,
+            client_secret,
+            auth_url: format!("https://{host}/oauth/auth"),
+            token_url: format!("https://{host}/oauth/token"),
+            // DocuSign has no read-only scope for envelopes: \"signature\" also allows sending. This
+            // server only ever reads. \"extended\" keeps the refresh token alive while it is used.
+            scopes: ["signature", "extended"].map(String::from).to_vec(),
+            api_base: format!("https://{host}"),
+            extra_auth_params: Vec::new(),
+            basic_auth: true,
+            userinfo_url: Some(format!("https://{host}/oauth/userinfo")),
+            redirect_uri: None,
         }
     }
 }
@@ -87,6 +218,11 @@ impl ProviderConfig {
 pub struct OAuthSettings {
     pub microsoft: Option<ProviderConfig>,
     pub google: Option<ProviderConfig>,
+    pub dropbox: Option<ProviderConfig>,
+    pub docusign: Option<ProviderConfig>,
+    pub outlook_mail: Option<ProviderConfig>,
+    pub quickbooks: Option<ProviderConfig>,
+    pub zoom: Option<ProviderConfig>,
     /// Where the provider sends the administrator back to, registered with the provider.
     pub redirect_uri: String,
     pub state_key: Vec<u8>,
@@ -97,13 +233,18 @@ impl OAuthSettings {
         match kind {
             Kind::Microsoft365 => self.microsoft.as_ref(),
             Kind::GoogleDrive => self.google.as_ref(),
+            Kind::Dropbox => self.dropbox.as_ref(),
+            Kind::DocuSign => self.docusign.as_ref(),
+            Kind::OutlookMail => self.outlook_mail.as_ref(),
+            Kind::QuickBooks => self.quickbooks.as_ref(),
+            Kind::Zoom => self.zoom.as_ref(),
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.state_key.len() >= 32
             && !self.redirect_uri.is_empty()
-            && (self.microsoft.is_some() || self.google.is_some())
+            && (self.microsoft.is_some() || self.google.is_some() || self.dropbox.is_some() || self.docusign.is_some() || self.outlook_mail.is_some() || self.quickbooks.is_some() || self.zoom.is_some())
     }
 }
 
@@ -174,8 +315,14 @@ pub fn authorization_url(
             .append_pair("client_id", &provider.client_id)
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", redirect_uri)
-            .append_pair("scope", &provider.scopes.join(" "))
             .append_pair("state", state);
+        // Some providers (Zoom) take their permissions from the app's settings, not from the link.
+        if !provider.scopes.is_empty() {
+            query.append_pair("scope", &provider.scopes.join(" "));
+        }
+        for (name, value) in &provider.extra_auth_params {
+            query.append_pair(name, value);
+        }
         if kind == Kind::GoogleDrive {
             // Without these Google returns no refresh token.
             query
@@ -184,6 +331,16 @@ pub fn authorization_url(
         }
     }
     Ok(url.into())
+}
+
+/// Whether an API address DocuSign gave us is DocuSign's own. Our access token is sent there, so
+/// anything else is refused. `insecure_test` lets the local stand-in server through.
+pub fn docusign_address_ok(base: &str, insecure_test: bool) -> bool {
+    match Url::parse(base) {
+        Ok(url) if insecure_test => matches!(url.scheme(), "http" | "https"),
+        Ok(url) => url.scheme() == "https" && url.host_str().is_some_and(|host| host.ends_with(".docusign.net")) && url.username().is_empty(),
+        Err(_) => false,
+    }
 }
 
 pub struct Tokens {
@@ -197,15 +354,16 @@ pub async fn exchange_code(
     redirect_uri: &str,
     code: &str,
 ) -> Result<Tokens> {
-    let response = http
-        .post(&provider.token_url)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("client_id", provider.client_id.as_str()),
-            ("client_secret", provider.client_secret.as_str()),
-        ])
+    let mut request = http.post(&provider.token_url);
+    let mut form = vec![("grant_type", "authorization_code"), ("code", code), ("redirect_uri", redirect_uri)];
+    if provider.basic_auth {
+        request = request.basic_auth(&provider.client_id, Some(&provider.client_secret));
+    } else {
+        form.push(("client_id", provider.client_id.as_str()));
+        form.push(("client_secret", provider.client_secret.as_str()));
+    }
+    let response = request
+        .form(&form)
         .send()
         .await
         .map_err(|_| Error::Token("could not reach the provider".into()))?;
@@ -229,6 +387,26 @@ mod tests {
     use serde_json::json;
 
     const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn only_docusigns_own_addresses_receive_our_token() {
+        for ok in ["https://na3.docusign.net", "https://eu.docusign.net/restapi", "https://demo.docusign.net"] {
+            assert!(docusign_address_ok(ok, false), "{ok}");
+        }
+        for refused in [
+            "https://evil.example",
+            "https://na3.docusign.net.evil.example",
+            "https://evil.example/.docusign.net",
+            "http://na3.docusign.net",
+            "https://user@evil.example",
+            "https://docusign.net.evil.example",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(!docusign_address_ok(refused, false), "{refused}");
+        }
+        assert!(docusign_address_ok("http://127.0.0.1:9", true));
+    }
 
     #[test]
     fn state_round_trips_and_carries_the_firm_and_administrator() {
@@ -281,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn the_authorization_link_asks_for_read_only_offline_access() {
+    fn the_google_authorization_link_asks_for_reading_and_saving_with_offline_access() {
         let provider = ProviderConfig::google("client".into(), "secret".into());
         let link = authorization_url(
             &provider,
@@ -298,7 +476,7 @@ mod tests {
         };
         assert_eq!(
             get("scope").as_deref(),
-            Some("https://www.googleapis.com/auth/drive.readonly")
+            Some("https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file")
         );
         assert_eq!(
             (get("state").as_deref(), get("access_type").as_deref()),

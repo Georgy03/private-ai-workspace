@@ -1,0 +1,11 @@
+# Railway service "worker". In the service's settings: Root Directory = backend, and Config as Code
+# path = /backend/railway.worker.toml. It serves no web page, so it has no health check and no public
+# domain; give it at least 2 GB of memory (the meaning-search model and the file parsers).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "workspace-cloud worker"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

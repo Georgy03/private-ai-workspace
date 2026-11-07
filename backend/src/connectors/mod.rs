@@ -1,6 +1,9 @@
 //! Connectors read files and their permissions from an outside system (Microsoft 365, Google
 //! Drive). A connector only reads; the sync engine in `crate::sync` decides what to store.
 
+pub mod docusign;
+pub mod dropbox;
+pub mod quickbooks;
 pub mod google;
 pub mod microsoft;
 
@@ -109,6 +112,8 @@ pub fn web_link(value: &serde_json::Value) -> Option<String> {
 pub enum Change {
     Upsert(RemoteFile),
     Delete(String),
+    /// Everything inside this folder is gone (for providers that report a deleted folder once).
+    DeleteTree(String),
 }
 
 #[derive(Debug, Default)]
@@ -153,13 +158,20 @@ impl TokenSource for StaticToken {
     }
 }
 
+/// A refresh token the provider replaced while we used it. Providers that rotate them (DocuSign)
+/// invalidate the old one eventually, so the worker saves the new one when a sync ends.
+pub type RotatedToken = std::sync::Arc<Mutex<Option<String>>>;
+
 /// Exchanges a long-lived refresh token for short-lived access tokens, and caches them.
 pub struct RefreshingToken {
     http: reqwest::Client,
     token_url: String,
     client_id: String,
     client_secret: String,
-    refresh_token: String,
+    refresh_token: Mutex<String>,
+    /// Send the client ID and secret as a Basic authorization header instead of in the form.
+    basic_auth: bool,
+    rotated: RotatedToken,
     cached: Mutex<Option<(String, Instant)>>,
 }
 
@@ -175,9 +187,21 @@ impl RefreshingToken {
             token_url,
             client_id,
             client_secret,
-            refresh_token,
+            refresh_token: Mutex::new(refresh_token),
+            basic_auth: false,
+            rotated: Default::default(),
             cached: Mutex::new(None),
         })
+    }
+
+    pub fn with_basic_auth(mut self, basic: bool) -> Self {
+        self.basic_auth = basic;
+        self
+    }
+
+    /// Where a replacement refresh token will appear, if the provider issues one.
+    pub fn rotated_token(&self) -> RotatedToken {
+        self.rotated.clone()
     }
 }
 
@@ -189,15 +213,17 @@ impl TokenSource for RefreshingToken {
         {
             return Ok(token.clone());
         }
-        let response = self
-            .http
-            .post(&self.token_url)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", self.refresh_token.as_str()),
-                ("client_id", self.client_id.as_str()),
-                ("client_secret", self.client_secret.as_str()),
-            ])
+        let current = self.refresh_token.lock().unwrap().clone();
+        let mut request = self.http.post(&self.token_url);
+        let mut form = vec![("grant_type", "refresh_token"), ("refresh_token", current.as_str())];
+        if self.basic_auth {
+            request = request.basic_auth(&self.client_id, Some(&self.client_secret));
+        } else {
+            form.push(("client_id", self.client_id.as_str()));
+            form.push(("client_secret", self.client_secret.as_str()));
+        }
+        let response = request
+            .form(&form)
             .send()
             .await
             .map_err(|_| ConnectorError::Other("could not reach the sign-in service".into()))?;
@@ -213,6 +239,12 @@ impl TokenSource for RefreshingToken {
             .filter(|_| status.is_success())
             .ok_or_else(|| ConnectorError::Other(format!("token endpoint returned {status}")))?
             .to_string();
+        // A provider that rotates refresh tokens sends a new one; keep using it, and let the worker
+        // save it when this sync ends.
+        if let Some(next) = body["refresh_token"].as_str().filter(|next| !next.is_empty() && *next != current) {
+            *self.refresh_token.lock().unwrap() = next.to_string();
+            *self.rotated.lock().unwrap() = Some(next.to_string());
+        }
         let lifetime = body["expires_in"]
             .as_u64()
             .unwrap_or(300)
@@ -266,6 +298,19 @@ impl Api {
             http: http_client()?,
             tokens,
         })
+    }
+
+    /// Asks for JSON in every request, for services (QuickBooks) that answer in XML otherwise.
+    pub fn asking_for_json(mut self) -> Result<Self, ConnectorError> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("application/json"));
+        self.http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .default_headers(headers)
+            .build()
+            .map_err(|error| ConnectorError::Other(format!("could not start HTTPS: {error}")))?;
+        Ok(self)
     }
 
     /// GET with the access token, retrying brief failures and honouring rate limits.
@@ -329,6 +374,117 @@ impl Api {
             }
         }
         Err(ConnectorError::Other("provider kept failing".into()))
+    }
+
+    /// POST with the access token, for providers whose API is calls with a JSON body (Dropbox).
+    /// `headers` are added to every attempt. Retries and rate limits work as for `get`.
+    pub async fn post(
+        &self,
+        url: &str,
+        body: Option<&Value>,
+        headers: &[(&str, String)],
+    ) -> Result<reqwest::Response, ConnectorError> {
+        let mut refreshed = false;
+        for attempt in 0..4u32 {
+            let token = self.tokens.token().await?;
+            let mut request = self.http.post(url).bearer_auth(&token);
+            for (name, value) in headers {
+                request = request.header(*name, value);
+            }
+            request = match body {
+                Some(body) => request.json(body),
+                // Dropbox's download calls carry their arguments in a header and no body.
+                None => request,
+            };
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(_) if attempt < 3 => {
+                    tokio::time::sleep(Duration::from_millis(200 * 2u64.pow(attempt))).await;
+                    continue;
+                }
+                Err(_) => return Err(ConnectorError::Other("could not reach the provider".into())),
+            };
+            let status = response.status();
+            match status.as_u16() {
+                200..=299 => return Ok(response),
+                401 if !refreshed => {
+                    refreshed = true;
+                    self.tokens.invalidate();
+                }
+                401 => return Err(ConnectorError::Unauthorized),
+                400 => return Err(ConnectorError::BadRequest),
+                403 => return Err(ConnectorError::Forbidden),
+                404 => return Err(ConnectorError::NotFound),
+                // Dropbox reports "this cursor is no longer valid", "no such file" and "no
+                // permission" as HTTP 409 with the reason in the body.
+                409 => {
+                    let reason = response.text().await.unwrap_or_default();
+                    return Err(if reason.contains("reset") {
+                        ConnectorError::CursorExpired
+                    } else if reason.contains("not_found") {
+                        ConnectorError::NotFound
+                    } else if reason.contains("no_permission") || reason.contains("access_error") {
+                        ConnectorError::Forbidden
+                    } else {
+                        ConnectorError::BadRequest
+                    });
+                }
+                429 | 503 => {
+                    let wait = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .map(Duration::from_secs)
+                        .unwrap_or(Duration::from_secs(5));
+                    if attempt < 3 && wait <= Duration::from_secs(10) {
+                        tokio::time::sleep(wait).await;
+                        continue;
+                    }
+                    return Err(ConnectorError::RateLimited(wait));
+                }
+                500..=599 if attempt < 3 => {
+                    tokio::time::sleep(Duration::from_millis(200 * 2u64.pow(attempt))).await;
+                }
+                _ => return Err(ConnectorError::Other(format!("provider returned HTTP {status}"))),
+            }
+        }
+        Err(ConnectorError::Other("provider kept failing".into()))
+    }
+
+    pub async fn post_json(
+        &self,
+        url: &str,
+        body: &Value,
+        headers: &[(&str, String)],
+    ) -> Result<Value, ConnectorError> {
+        self.post(url, Some(body), headers)
+            .await?
+            .json()
+            .await
+            .map_err(|_| ConnectorError::Other("provider returned unreadable data".into()))
+    }
+
+    /// A POST whose answer is a file, read up to `cap` bytes; None if it is bigger.
+    pub async fn post_bytes_capped(
+        &self,
+        url: &str,
+        headers: &[(&str, String)],
+        cap: usize,
+    ) -> Result<Option<Vec<u8>>, ConnectorError> {
+        let mut response = self.post(url, None, headers).await?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| ConnectorError::Other("download was interrupted".into()))?
+        {
+            body.extend_from_slice(&chunk);
+            if body.len() > cap {
+                return Ok(None);
+            }
+        }
+        Ok(Some(body))
     }
 
     pub async fn get_json(
@@ -448,7 +604,7 @@ pub fn chunk_text(text: &str) -> Vec<String> {
 }
 
 /// Lower-cases and trims an email address, and rejects anything that is not one.
-pub(crate) fn email_principal(address: &str) -> Option<String> {
+pub fn email_principal(address: &str) -> Option<String> {
     let address = address.trim().to_lowercase();
     (address.contains('@') && !address.contains(char::is_whitespace))
         .then(|| format!("email:{address}"))

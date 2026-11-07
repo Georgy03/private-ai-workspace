@@ -311,7 +311,7 @@ async fn bad_requests_are_refused_before_touching_the_database() {
     )
     .await;
     assert!(status.is_client_error());
-    let huge = json!({ "query": "x".repeat(20_000) }).to_string();
+    let huge = json!({ "query": "x".repeat(40_000) }).to_string();
     let (status, _) = call(&app, "POST", "/v1/search", Some(&good), Some(huge)).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 
@@ -1557,4 +1557,262 @@ async fn entities_can_be_listed_filtered_and_reviewed_and_bad_filters_are_refuse
     assert_eq!(body["profile"]["status"], "verified");
     assert_eq!(body["profile"]["summary"], "We replace roofs.");
     assert_eq!(body["profile"]["services"], json!(["Roof replacement"]));
+}
+
+#[tokio::test]
+async fn browsing_search_filters_by_age_source_and_type_and_counts_only_what_a_person_may_open() {
+    let env = Env::new().await;
+    let firm = env
+        .firm("Firm A", "budget.xlsx", "The retreat budget is five thousand dollars.", &["user:alice"])
+        .await;
+    let mut worker = env.worker().await;
+    let tx = db::TenantTx::begin(&mut worker, firm.tenant).await.unwrap();
+    let drive = tx.add_connection("google_drive", "secret/two").await.unwrap();
+    for (name, readers) in [("retreat plan.docx", &["user:alice"][..]), ("retreat secrets.pdf", &["user:bob"][..])] {
+        let id = tx
+            .upsert_document(&db::NewDocument {
+                connection_id: drive,
+                external_id: format!("ext-{name}"),
+                name: name.into(),
+                path: format!("/{name}"),
+                readable_by: readers.iter().map(|s| s.to_string()).collect(),
+            })
+            .await
+            .unwrap();
+        tx.add_chunk(id, 0, "The retreat is planned for spring.").await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    env.admin.execute("UPDATE documents SET modified_at = 100 WHERE name = 'budget.xlsx'", &[]).await.unwrap();
+    env.admin.execute("UPDATE documents SET modified_at = 5000000000 WHERE name <> 'budget.xlsx'", &[]).await.unwrap();
+
+    let app = app(&env, 1);
+    let alice = token(&firm, "alice", &[]);
+    let browse = |filters: Value| {
+        let app = app.clone();
+        let alice = alice.clone();
+        async move {
+            call(&app, "POST", "/v1/search/browse", Some(&alice), Some(json!({ "query": "retreat", "filters": filters }).to_string())).await
+        }
+    };
+    let names = |body: &Value| {
+        let mut n: Vec<String> = body["results"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap().to_string()).collect();
+        n.sort();
+        n
+    };
+
+    // Alice sees the two files she may open, and the counts leave out Bob's private file.
+    let (status, all) = browse(json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&all), ["budget.xlsx", "retreat plan.docx"]);
+    assert_eq!(all["total"], 2);
+    let sources: Vec<(String, u64)> = all["facets"]["sources"].as_array().unwrap().iter().map(|c| (c["value"].as_str().unwrap().into(), c["count"].as_u64().unwrap())).collect();
+    assert_eq!(sources.iter().map(|s| s.1).sum::<u64>(), 2, "{sources:?}");
+
+    // Recent files only.
+    let (_, recent) = browse(json!({ "since_epoch": 1_000_000 })).await;
+    assert_eq!(names(&recent), ["retreat plan.docx"]);
+    // One source: the other source's count is still shown, so it can be switched to.
+    let (_, one) = browse(json!({ "sources": ["google_drive"] })).await;
+    assert_eq!(names(&one), ["retreat plan.docx"]);
+    assert_eq!(one["facets"]["sources"].as_array().unwrap().len(), 2);
+    // One kind of file.
+    let (_, sheets) = browse(json!({ "types": ["spreadsheet"] })).await;
+    assert_eq!(names(&sheets), ["budget.xlsx"]);
+    // Nobody without sign-in gets anything.
+    let (status, _) = call(&app, "POST", "/v1/search/browse", None, Some(json!({ "query": "retreat" }).to_string())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn answering_search_can_be_limited_to_connected_sources_and_kinds_of_file() {
+    let env = Env::new().await;
+    let firm = env
+        .firm("Firm A", "budget.xlsx", "The retreat budget is five thousand dollars.", &["user:alice"])
+        .await;
+    let mut worker = env.worker().await;
+    let tx = db::TenantTx::begin(&mut worker, firm.tenant).await.unwrap();
+    let drive = tx.add_connection("google_drive", "secret/two").await.unwrap();
+    let dropbox = tx.add_connection("dropbox", "secret/three").await.unwrap();
+    for (connection, name) in [(drive, "retreat plan.docx"), (drive, "retreat deck.pptx"), (drive, "retreat secrets.pdf"), (dropbox, "retreat notes.docx")] {
+        let id = tx
+            .upsert_document(&db::NewDocument {
+                connection_id: connection,
+                external_id: format!("ext-{name}"),
+                name: name.into(),
+                path: format!("/{name}"),
+                readable_by: vec![if name.contains("secrets") { "user:bob".into() } else { "user:alice".into() }],
+            })
+            .await
+            .unwrap();
+        tx.add_chunk(id, 0, "The retreat is planned for spring.").await.unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let app = app(&env, 1);
+    let alice = token(&firm, "alice", &[]);
+    let search = |extra: Value| {
+        let app = app.clone();
+        let alice = alice.clone();
+        async move {
+            let mut body = json!({ "query": "retreat", "limit": 20 });
+            for (key, value) in extra.as_object().unwrap() {
+                body[key] = value.clone();
+            }
+            call(&app, "POST", "/v1/search", Some(&alice), Some(body.to_string())).await
+        }
+    };
+    let names = |body: &Value| {
+        let mut n: Vec<String> = body["results"].as_array().unwrap().iter().map(|r| r["document_name"].as_str().unwrap().to_string()).collect();
+        n.sort();
+        n.dedup();
+        n
+    };
+
+    // No filter: everything Alice may open, and never Bob's private file.
+    let (status, all) = search(json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&all), ["budget.xlsx", "retreat deck.pptx", "retreat notes.docx", "retreat plan.docx"]);
+    // One connected source.
+    let (_, only_drive) = search(json!({ "sources": ["google_drive"] })).await;
+    assert_eq!(names(&only_drive), ["retreat deck.pptx", "retreat plan.docx"]);
+    // One kind of file, from any source: Slides are presentations, Docs are documents.
+    let (_, slides) = search(json!({ "types": ["presentation"] })).await;
+    assert_eq!(names(&slides), ["retreat deck.pptx"]);
+    let (_, documents) = search(json!({ "types": ["document"] })).await;
+    assert_eq!(names(&documents), ["retreat notes.docx", "retreat plan.docx"]);
+    // Both together narrow it further; several of one kind widen it.
+    let (_, drive_documents) = search(json!({ "sources": ["google_drive"], "types": ["document"] })).await;
+    assert_eq!(names(&drive_documents), ["retreat plan.docx"]);
+    let (_, slides_and_sheets) = search(json!({ "types": ["presentation", "spreadsheet"] })).await;
+    assert_eq!(names(&slides_and_sheets), ["budget.xlsx", "retreat deck.pptx"]);
+    // A filter never reveals what the person may not open.
+    let (_, pdfs) = search(json!({ "types": ["pdf"] })).await;
+    assert!(names(&pdfs).is_empty(), "{pdfs}");
+    // Pinned documents (a workspace): only inside them, and never one the person may not open.
+    let id_of = |body: &Value, name: &str| body["results"].as_array().unwrap().iter().find(|r| r["document_name"] == name).unwrap()["document_id"].as_str().unwrap().to_string();
+    let (plan, budget) = (id_of(&all, "retreat plan.docx"), id_of(&all, "budget.xlsx"));
+    let (_, pinned) = search(json!({ "documents": [plan] })).await;
+    assert_eq!(names(&pinned), ["retreat plan.docx"]);
+    let (_, two) = search(json!({ "documents": [plan, budget] })).await;
+    assert_eq!(names(&two), ["budget.xlsx", "retreat plan.docx"]);
+    let (status, stranger) = search(json!({ "documents": ["00000000-0000-4000-8000-000000000001"] })).await;
+    assert_eq!((status, names(&stranger).len()), (StatusCode::OK, 0));
+    let (status, _) = search(json!({ "documents": (0..501).map(|n| format!("00000000-0000-4000-8000-{n:012}")).collect::<Vec<_>>() })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Filters that are not real ones are refused.
+    for bad in [json!({ "types": ["spreadsheets; drop"] }), json!({ "sources": ["Google Drive"] }), json!({ "sources": (0..21).map(|n| format!("s{n}")).collect::<Vec<_>>() })] {
+        let (status, _) = search(bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
+async fn retention_routes_are_the_owners_and_only_an_administrator_changes_the_firms_period() {
+    let env = Env::new().await;
+    let firm = env.firm("Firm A", "a.txt", "text", &["user:alice"]).await;
+    let app = app(&env, 1);
+    let alice = token(&firm, "alice", &[]);
+    let admin = token(&firm, "boss", &["firm_admin"]);
+
+    // The list of reports about to be deleted is the caller's own, and the route is not mistaken for a task ID.
+    let (status, body) = call(&app, "GET", "/v1/tasks/expiring", Some(&alice), None).await;
+    assert_eq!((status, body["tasks"].as_array().map(Vec::len)), (StatusCode::OK, Some(0)));
+    let (status, _) = call(&app, "GET", "/v1/tasks/expiring", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Everyone can see the period; only an administrator changes it, and only to a listed choice.
+    let (_, listed) = call(&app, "GET", "/v1/agents", Some(&alice), None).await;
+    assert_eq!(listed["retention_days"], 90);
+    let set = |days: i64| json!({ "days": days }).to_string();
+    let (status, _) = call(&app, "PUT", "/v1/agents/retention", Some(&alice), Some(set(30))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = call(&app, "PUT", "/v1/agents/retention", Some(&admin), Some(set(45))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(&app, "PUT", "/v1/agents/retention", Some(&admin), Some(set(30))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed) = call(&app, "GET", "/v1/agents", Some(&alice), None).await;
+    assert_eq!(listed["retention_days"], 30);
+
+    // Nothing exists to keep or delete, and another person's task is indistinguishable from none.
+    let none = "00000000-0000-0000-0000-000000000000";
+    for action in ["keep", "let-expire", "delete"] {
+        let (status, _) = call(&app, "POST", &format!("/v1/tasks/{none}/{action}"), Some(&alice), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{action}");
+    }
+}
+
+/// A finished report by `user` that was drawn from the named file, for the tests below.
+async fn finished_report(env: &Env, firm: &Firm, user: &str, used: uuid::Uuid) -> uuid::Uuid {
+    use workspace_cloud::{
+        agents::{self, AgentSettings, AgentSpec, Started},
+        auth::Principal,
+    };
+    let spec = AgentSpec {
+        name: "John".into(),
+        role: "Research & Reporting".into(),
+        description: "Reports.".into(),
+        icon: "search".into(),
+        color: "blue".into(),
+        instructions: "Report.".into(),
+        tools: vec!["search_documents".into()],
+        model: "standard".into(),
+        effort: "low".into(),
+    };
+    let person = Principal { tenant: firm.tenant, user: user.into(), groups: vec![], email: None };
+    let mut api = env.api().await;
+    let tx = db::TenantTx::begin(&mut api, firm.tenant).await.unwrap();
+    let agent = agents::create_agent(&tx, "admin", &spec, &AgentSettings::default()).await.unwrap();
+    let Started::Queued(task) = agents::start_task(&tx, &person, agent, "Report on the retreat").await.unwrap() else {
+        panic!("not queued")
+    };
+    tx.commit().await.unwrap();
+    env.admin
+        .execute(
+            "UPDATE agent_tasks SET status = 'done', result = 'The retreat costs 5000.', sources = $2 WHERE id = $1",
+            &[&task, &json!([{ "document_id": used.to_string(), "name": "retreat.docx" }])],
+        )
+        .await
+        .unwrap();
+    task
+}
+
+#[tokio::test]
+async fn a_report_can_be_searched_within_only_the_files_it_used_and_only_by_its_owner() {
+    let env = Env::new().await;
+    let firm = env
+        .firm("Firm A", "retreat.docx", "The retreat budget is 5000 dollars. The hotel costs 3000 dollars.", &["user:alice", "user:bob"])
+        .await;
+    add_file(&env, &firm, "other.txt", &["The retreat budget meeting is on Monday."], &["user:alice", "user:bob"]).await;
+    let task = finished_report(&env, &firm, "alice", firm.document).await;
+    let app = app(&env, 2);
+    let alice = token(&firm, "alice", &[]);
+    let within = |query: &str, task: uuid::Uuid| json!({ "query": query, "task": task }).to_string();
+
+    // A search with no task finds both files; inside the report, only the file it used.
+    let (_, everywhere) = search(&app, Some(&alice), "retreat budget").await;
+    assert_eq!(names(&everywhere), ["other.txt", "retreat.docx"]);
+    let (status, inside) = call(&app, "POST", "/v1/search", Some(&alice), Some(within("retreat budget", task))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(names(&inside), ["retreat.docx"]);
+
+    // A vague question that matches nothing in particular still gets the start of the file.
+    let (_, vague) = call(&app, "POST", "/v1/search", Some(&alice), Some(within("what else does it say", task))).await;
+    assert_eq!(names(&vague), ["retreat.docx"]);
+
+    // Someone else's report, or one that does not exist, is simply not found.
+    let bob = token(&firm, "bob", &[]);
+    let (status, _) = call(&app, "POST", "/v1/search", Some(&bob), Some(within("retreat budget", task))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "POST", "/v1/search", Some(&alice), Some(within("retreat budget", uuid::Uuid::new_v4()))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // An administrator can see that the task exists, but not what is in it, so the same.
+    let admin = token(&firm, "boss", &["firm_admin"]);
+    let (status, _) = call(&app, "POST", "/v1/search", Some(&admin), Some(within("retreat budget", task))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // If the owner can no longer open the file, the report cannot be used to read it.
+    env.admin.execute("UPDATE documents SET readable_by = ARRAY['user:carol'] WHERE id = $1", &[&firm.document]).await.unwrap();
+    let (status, now) = call(&app, "POST", "/v1/search", Some(&alice), Some(within("retreat budget", task))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(names(&now).is_empty(), "{now}");
 }

@@ -49,7 +49,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/me", get(me))
-        .route("/v1/search", post(search))
+        .route("/v1/search", post(search).layer(DefaultBodyLimit::max(32 * 1024)))
         .route("/v1/connectors", get(list_connectors))
         .route("/v1/connections", get(list_connections).post(connect))
         .route("/v1/connections/{id}", axum::routing::delete(disconnect))
@@ -60,7 +60,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/usage/limit", axum::routing::put(set_usage_limit))
         .route("/v1/usage/team", get(usage_team))
         .merge(crate::knowledge_api::routes())
+        .route("/v1/connections/{id}/scope", axum::routing::put(set_scope))
         .merge(crate::agents_api::routes())
+        .merge(crate::schedules_api::routes())
+        .merge(crate::browse::routes())
         .route("/oauth/callback", get(oauth_callback))
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(ready))
@@ -182,6 +185,20 @@ struct SearchRequest {
     limit: Option<i64>,
     /// Set to false to match words only, for comparing the two kinds of search. Default true.
     meaning: Option<bool>,
+    /// Search only inside the documents one of the caller's own reports was drawn from, for
+    /// asking questions about that report. Someone else's report is not found.
+    task: Option<Uuid>,
+    /// Only files from these connected sources ("google_drive", "microsoft365", ...). Empty means all.
+    #[serde(default)]
+    sources: Vec<String>,
+    /// Only these kinds of file ("document", "spreadsheet", "presentation", "pdf", "image", "other").
+    /// Empty means all. Google Docs, Sheets and Slides are documents, spreadsheets and presentations.
+    #[serde(default)]
+    types: Vec<String>,
+    /// Only inside these documents (the ones pinned to a workspace). Documents the caller may not
+    /// open are never found, whatever is listed here.
+    #[serde(default)]
+    documents: Vec<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -213,6 +230,15 @@ async fn search(
         return Err(ApiError::BadRequest("query must be 1 to 2000 characters"));
     }
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    if request.sources.len() > 20 || request.types.len() > crate::browse::FILE_TYPES.len() || request.documents.len() > 500 {
+        return Err(ApiError::BadRequest("too many filters"));
+    }
+    if request.sources.iter().any(|source| source.len() > 40 || !source.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+        || request.types.iter().any(|kind| !crate::browse::FILE_TYPES.contains(&kind.as_str()))
+    {
+        return Err(ApiError::BadRequest("unknown filter"));
+    }
+    let filtering = !request.sources.is_empty() || !request.types.is_empty();
 
     // The question's meaning vector. If the model cannot be used, the search falls back to words.
     let vector = match state
@@ -231,16 +257,79 @@ async fn search(
     };
     let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
     let tx = open(&mut conn, &principal).await?;
-    let hits = tx
+    let mut within: Option<Vec<Uuid>> = match request.task {
+        None => None,
+        Some(task) => {
+            let task = crate::agents::get_task(&tx, &principal, task).await?.ok_or(ApiError::NotFound)?;
+            let sources = task.sources.ok_or(ApiError::NotFound)?;
+            Some(
+                sources
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|source| source["document_id"].as_str().and_then(|id| Uuid::parse_str(id).ok()))
+                    .collect(),
+            )
+        }
+    };
+    if !request.documents.is_empty() {
+        // Inside a report's files and inside the pinned documents: only what is in both.
+        within = Some(match within {
+            Some(report) => report.into_iter().filter(|id| request.documents.contains(id)).collect(),
+            None => request.documents.clone(),
+        });
+    }
+    let mut hits = tx
         .search_hybrid(
             &principal,
             query,
             vector
                 .as_ref()
                 .map(|(model, vector)| (model.as_str(), vector.as_slice())),
-            limit,
+            if within.is_some() || filtering { MAX_LIMIT * 4 } else { limit },
         )
         .await?;
+    if filtering {
+        // Which connected source and what kind of file each hit is, for hits the caller may open.
+        let ids: Vec<Uuid> = hits.iter().map(|hit| hit.document_id).collect();
+        let meta: std::collections::HashMap<Uuid, (String, String, String)> = tx
+            .sql()
+            .query(
+                "SELECT d.id, cn.kind, d.mime_type, d.name
+                 FROM documents d JOIN connections cn ON cn.id = d.connection_id
+                 WHERE d.id = ANY($1) AND d.readable_by && $2::text[]",
+                &[&ids, &principal.readers()],
+            )
+            .await
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|row| (row.get(0), (row.get(1), row.get(2), row.get(3))))
+            .collect();
+        hits.retain(|hit| {
+            meta.get(&hit.document_id).is_some_and(|(source, mime, name)| {
+                (request.sources.is_empty() || request.sources.contains(source))
+                    && (request.types.is_empty() || request.types.iter().any(|kind| kind == crate::browse::file_type(mime, name)))
+            })
+        });
+        hits.truncate(limit as usize);
+    }
+    if let Some(documents) = &within {
+        hits.retain(|hit| documents.contains(&hit.document_id));
+        hits.truncate(limit as usize);
+        // A vague question may match nothing in particular: then the start of each file the
+        // report used is the best place to look.
+        if hits.len() < 3 && !documents.is_empty() {
+            let known: Vec<Uuid> = hits.iter().map(|hit| hit.chunk_id).collect();
+            for hit in tx.opening_passages(&principal, documents, 2, limit).await? {
+                if hits.len() >= limit as usize {
+                    break;
+                }
+                if !known.contains(&hit.chunk_id) {
+                    hits.push(hit);
+                }
+            }
+        }
+    }
     // Counts only: the question itself is never written to the log.
     tx.audit(
         &principal.user,
@@ -307,14 +396,47 @@ fn valid_drive_id(value: &str) -> bool {
 /// unavailable, so nobody clicks a button that can only fail.
 async fn list_connectors(
     State(state): State<AppState>,
-    Authed(_): Authed,
+    Authed(principal): Authed,
 ) -> Json<serde_json::Value> {
     let available = |kind: Kind| state.oauth.is_enabled() && state.oauth.provider(kind).is_some();
-    Json(json!({ "connectors": [
+    Json(json!({
+        // Anyone may connect a source for themselves; only an administrator for everyone.
+        "can_share_with_workspace": principal.is_admin(),
+        "connectors": [
+        {
+            "kind": Kind::Dropbox.as_str(),
+            "name": "Dropbox",
+            "description": "Client files and shared documents in Dropbox: Word, Excel, PowerPoint, PDF and text files, with the sharing Dropbox records.",
+            "available": available(Kind::Dropbox),
+        },
+        {
+            "kind": Kind::DocuSign.as_str(),
+            "name": "DocuSign",
+            "description": "Contracts and agreements sent for signature: the signed documents and who has signed or is still outstanding.",
+            "available": available(Kind::DocuSign),
+        },
+        {
+            "kind": Kind::OutlookMail.as_str(),
+            "name": "Outlook email",
+            "description": "Send the emails your AI helpers prepare, from your own Outlook, after you have read them. It can only send what you approve, and cannot read your mail.",
+            "available": available(Kind::OutlookMail),
+        },
+        {
+            "kind": Kind::QuickBooks.as_str(),
+            "name": "QuickBooks Online",
+            "description": "A company's customers, vendors, invoices, bills, payments, expenses and key reports, kept up to date. Read only, and only you can search what you connect.",
+            "available": available(Kind::QuickBooks),
+        },
+        {
+            "kind": Kind::Zoom.as_str(),
+            "name": "Zoom",
+            "description": "Create Zoom meetings for you, after you have read and approved them, and put the join link in your emails. It cannot read your meetings, recordings or contacts.",
+            "available": available(Kind::Zoom),
+        },
         {
             "kind": Kind::GoogleDrive.as_str(),
             "name": "Google Drive",
-            "description": "Docs, Sheets, Slides, PDFs and Office files in My Drive, shared drives and files shared with you.",
+            "description": "Docs, Sheets, Slides, PDFs and Office files in My Drive, shared drives and files shared with you. You can also save a report into your own Drive, after you have read and approved it.",
             "available": available(Kind::GoogleDrive),
         },
         {
@@ -336,6 +458,10 @@ struct ConnectRequest {
     domains: Option<Vec<String>>,
     /// Re-authorise this connection (one that needs reconnecting) instead of adding a new one.
     reconnect: Option<Uuid>,
+    /// Who the files are for: "private" (only the person connecting) or "workspace" (everyone at
+    /// the firm, each seeing what the provider lets them open). Only an administrator may connect
+    /// for the workspace. Left out, it is "workspace", as connections always were.
+    scope: Option<String>,
 }
 
 async fn connect(
@@ -343,7 +469,23 @@ async fn connect(
     Authed(principal): Authed,
     Json(request): Json<ConnectRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&principal)?;
+    let mut scope = match request.scope.as_deref() {
+        None | Some("workspace") => "workspace",
+        Some("private") => "private",
+        Some(_) => return Err(ApiError::BadRequest("unknown scope")),
+    };
+    // A mailbox is one person's. It is never opened to the workspace, and anyone may connect their own.
+    if ["outlook_mail", "quickbooks", "zoom"].contains(&request.kind.as_str()) {
+        if request.scope.as_deref() == Some("workspace") {
+            return Err(ApiError::BadRequest("this is connected for one person only"));
+        }
+        scope = "private";
+    }
+    // Connecting for the whole workspace is an administrator's decision; connecting only for
+    // yourself is anyone's. Reconnecting keeps the scope the connection already has.
+    if request.reconnect.is_none() && scope == "workspace" {
+        require_admin(&principal)?;
+    }
     if !state.oauth.is_enabled() {
         return Err(ApiError::Unavailable(
             "connectors are not set up on this server",
@@ -370,15 +512,17 @@ async fn connect(
     if let Some(existing) = request.reconnect {
         let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
         let tx = open(&mut conn, &principal).await?;
+        may_manage(&tx, &principal, existing).await?;
         let row = tx
             .sql()
             .query_opt(
-                "SELECT kind, status FROM connections WHERE id = $1",
+                "SELECT kind, status, visibility FROM connections WHERE id = $1",
                 &[&existing],
             )
             .await
             .map_err(ApiError::internal)?
             .ok_or(ApiError::NotFound)?;
+        scope = if row.get::<_, String>(2) == "private" { "private" } else { "workspace" };
         if row.get::<_, String>(0) != request.kind {
             return Err(ApiError::BadRequest("that connection is a different kind"));
         }
@@ -389,6 +533,7 @@ async fn connect(
         }
         config.insert("reconnect".into(), json!(existing));
     }
+    config.insert("scope".into(), json!(scope));
     let signed = oauth::sign_state(
         &state.oauth.state_key,
         principal.tenant,
@@ -396,7 +541,7 @@ async fn connect(
         kind,
         serde_json::Value::Object(config),
     );
-    let url = oauth::authorization_url(provider, &state.oauth.redirect_uri, &signed, kind)?;
+    let url = oauth::authorization_url(provider, provider.redirect(&state.oauth.redirect_uri), &signed, kind)?;
     Ok(Json(json!({ "authorization_url": url })))
 }
 
@@ -413,6 +558,9 @@ fn page(status: StatusCode, message: &'static str) -> Response {
 
 #[derive(Deserialize)]
 struct CallbackQuery {
+    /// QuickBooks says which company was approved.
+    #[serde(rename = "realmId")]
+    realm_id: Option<String>,
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
@@ -440,7 +588,7 @@ async fn oauth_callback(
     let Ok(started) = oauth::verify_state(&state.oauth.state_key, signed) else {
         return page(StatusCode::BAD_REQUEST, FAILED);
     };
-    match finish_connection(&state, started, code).await {
+    match finish_connection(&state, started, code, query.realm_id.as_deref()).await {
         Ok(()) => page(
             StatusCode::OK,
             "Connected. You can close this window and return to the app.",
@@ -454,6 +602,7 @@ async fn finish_connection(
     state: &AppState,
     started: oauth::State,
     code: &str,
+    realm_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let tenant = crate::auth::TenantId(started.tenant);
     let kind = Kind::parse(&started.kind).ok_or(ApiError::BadRequest("kind"))?;
@@ -465,7 +614,7 @@ async fn finish_connection(
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(ApiError::internal)?;
-    let tokens = oauth::exchange_code(&http, provider, &state.oauth.redirect_uri, code)
+    let tokens = oauth::exchange_code(&http, provider, provider.redirect(&state.oauth.redirect_uri), code)
         .await
         .map_err(|_| ApiError::BadRequest("exchange"))?;
 
@@ -494,6 +643,110 @@ async fn finish_connection(
         config["drive_id"] = json!(id);
     }
 
+    let mut label: Option<String> = None;
+    if kind == Kind::OutlookMail {
+        // Which address mail will be sent from, so the person can see it and trust it.
+        let me: serde_json::Value = http
+            .get(format!("{}/v1.0/me?$select=mail,userPrincipalName", provider.api_base.trim_end_matches('/')))
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await
+            .map_err(ApiError::internal)?
+            .error_for_status()
+            .map_err(|_| ApiError::BadRequest("account"))?
+            .json()
+            .await
+            .map_err(ApiError::internal)?;
+        label = me["mail"].as_str().or_else(|| me["userPrincipalName"].as_str()).map(str::to_string);
+        if let Some(address) = &label {
+            config["account_email"] = json!(address);
+        }
+    }
+    if kind == Kind::Zoom {
+        // Whose Zoom this is, so the person can see which account meetings will be created in.
+        let me: serde_json::Value = http
+            .get(format!("{}/v2/users/me", provider.api_base.trim_end_matches('/')))
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await
+            .map_err(ApiError::internal)?
+            .error_for_status()
+            .map_err(|_| ApiError::BadRequest("account"))?
+            .json()
+            .await
+            .map_err(ApiError::internal)?;
+        label = me["email"].as_str().or_else(|| me["display_name"].as_str()).map(|text| text.chars().take(120).collect::<String>());
+        if let Some(address) = &label {
+            config["account_email"] = json!(address);
+        }
+    }
+    if kind == Kind::QuickBooks {
+        // Which company was approved, and what it is called, so the person can see which books these are.
+        let realm = realm_id.filter(|realm| crate::connectors::quickbooks::safe_realm(realm)).ok_or(ApiError::BadRequest("company"))?;
+        let info: serde_json::Value = http
+            .get(format!("{}/v3/company/{realm}/companyinfo/{realm}?minorversion=75", provider.api_base.trim_end_matches('/')))
+            .bearer_auth(&tokens.access_token)
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(ApiError::internal)?
+            .error_for_status()
+            .map_err(|_| ApiError::BadRequest("company"))?
+            .json()
+            .await
+            .map_err(ApiError::internal)?;
+        let name = info["CompanyInfo"]["CompanyName"].as_str().unwrap_or("QuickBooks company").chars().take(120).collect::<String>();
+        config["realm_id"] = json!(realm);
+        config["company_name"] = json!(name);
+        label = Some(name);
+    }
+    if kind == Kind::Dropbox {
+        // The account's email lets the person who connected it find their own files, which Dropbox
+        // lists no sharing for when they are not shared.
+        let account: serde_json::Value = http
+            .post(format!("{}/2/users/get_current_account", provider.api_base.trim_end_matches('/')))
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await
+            .map_err(ApiError::internal)?
+            .error_for_status()
+            .map_err(|_| ApiError::BadRequest("account"))?
+            .json()
+            .await
+            .map_err(ApiError::internal)?;
+        if let Some(email) = account["email"].as_str() {
+            config["account_email"] = json!(email);
+        }
+    }
+    if kind == Kind::DocuSign {
+        // DocuSign's API address depends on the account, and it says which one at sign-in.
+        let url = provider.userinfo_url.as_deref().ok_or(ApiError::BadRequest("userinfo"))?;
+        let info: serde_json::Value = http
+            .get(url)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .await
+            .map_err(ApiError::internal)?
+            .error_for_status()
+            .map_err(|_| ApiError::BadRequest("userinfo"))?
+            .json()
+            .await
+            .map_err(ApiError::internal)?;
+        let accounts = info["accounts"].as_array().cloned().unwrap_or_default();
+        let chosen = accounts.iter().find(|a| a["is_default"].as_bool() == Some(true)).or_else(|| accounts.first()).ok_or(ApiError::BadRequest("account"))?;
+        let id = chosen["account_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).ok_or(ApiError::BadRequest("account"))?;
+        let base = chosen["base_uri"].as_str().ok_or(ApiError::BadRequest("account"))?;
+        // Calls carry our token to this address, so it must be DocuSign's own.
+        if !oauth::docusign_address_ok(base, url.starts_with("http://")) {
+            return Err(ApiError::BadRequest("account"));
+        }
+        config["account_id"] = json!(id);
+        config["base_uri"] = json!(base.trim_end_matches('/'));
+        if let Some(email) = info["email"].as_str() {
+            config["account_email"] = json!(email);
+        }
+    }
+
     if let Some(existing) = started.config["reconnect"]
         .as_str()
         .and_then(|v| Uuid::parse_str(v).ok())
@@ -505,7 +758,24 @@ async fn finish_connection(
         .as_object_mut()
         .map(|object| object.remove("reconnect"));
 
+    if matches!(kind, Kind::OutlookMail | Kind::Zoom) {
+        let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
+        let tx = TenantTx::begin(&mut conn, tenant).await?;
+        let old: Vec<Uuid> = tx
+            .sql()
+            .query("DELETE FROM connections WHERE kind = $1 AND owner = $2 RETURNING id", &[&kind.as_str(), &started.user])
+            .await
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
+        tx.commit().await?;
+        for id in old {
+            let _ = state.secrets.delete(tenant, &refresh_token_name(tenant, id)).await;
+        }
+    }
     let connection = Uuid::new_v4();
+    let visibility = if started.config["scope"] == "private" { "private" } else { "workspace" };
     let secret = refresh_token_name(tenant, connection);
     let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
     let tx = TenantTx::begin(&mut conn, tenant).await?;
@@ -514,9 +784,9 @@ async fn finish_connection(
     }
     tx.sql()
         .execute(
-            "INSERT INTO connections (id, tenant_id, kind, secret_ref, config)
-             VALUES ($1, app_tenant(), $2, $3, $4)",
-            &[&connection, &started.kind, &secret, &config],
+            "INSERT INTO connections (id, tenant_id, kind, secret_ref, config, visibility, owner, label)
+             VALUES ($1, app_tenant(), $2, $3, $4, $5, $6, $7)",
+            &[&connection, &started.kind, &secret, &config, &visibility, &started.user, &label],
         )
         .await
         .map_err(ApiError::internal)?;
@@ -526,11 +796,13 @@ async fn finish_connection(
         .secrets
         .put(tenant, &secret, &tokens.refresh_token)
         .await?;
-    queue::enqueue(&tx, connection).await?;
+    if kind.syncs_files() {
+        queue::enqueue(&tx, connection).await?;
+    }
     tx.audit(
         &started.user,
         "connection_added",
-        &json!({ "kind": started.kind, "connection": connection }),
+        &json!({ "kind": started.kind, "connection": connection, "scope": visibility }),
     )
     .await?;
     if let Err(error) = tx.commit().await {
@@ -569,7 +841,9 @@ async fn reconnect_connection(
         .secrets
         .put(tenant, &refresh_token_name(tenant, existing), refresh_token)
         .await?;
-    queue::enqueue(&tx, existing).await?;
+    if Kind::parse(&started.kind).is_some_and(Kind::syncs_files) {
+        queue::enqueue(&tx, existing).await?;
+    }
     tx.audit(
         &started.user,
         "connection_reconnected",
@@ -599,9 +873,11 @@ async fn list_connections(
                     (SELECT COALESCE(jsonb_object_agg(note, n), '{}'::jsonb)
                      FROM (SELECT note, count(*) AS n FROM documents d
                            WHERE d.connection_id = c.id AND d.note IS NOT NULL GROUP BY note) t)
+             , c.visibility, (c.owner = $1), c.label
              FROM connections c LEFT JOIN sync_queue q ON q.connection_id = c.id
+             WHERE c.visibility = 'workspace' OR c.owner = $1
              ORDER BY c.kind, c.id",
-            &[],
+            &[&principal.user],
         )
         .await
         .map_err(ApiError::internal)?;
@@ -623,6 +899,12 @@ async fn list_connections(
                 "next_sync_epoch": row.get::<_, Option<f64>>(10),
                 "readable": row.get::<_, i64>(11),
                 "name_only_reasons": row.get::<_, serde_json::Value>(12),
+                "scope": row.get::<_, String>(13),
+                // Only the person who connected it can change or remove a private connection, and
+                // only an administrator a workspace one.
+                "yours": row.get::<_, Option<bool>>(14).unwrap_or(false),
+                // For a mailbox, the address it sends from.
+                "label": row.get::<_, Option<String>>(15),
             })
         })
         .collect();
@@ -826,9 +1108,9 @@ async fn connection_files(
     Authed(principal): Authed,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_admin(&principal)?;
     let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
     let tx = open(&mut conn, &principal).await?;
+    may_manage(&tx, &principal, id).await?;
     let rows = tx
         .sql()
         .query(
@@ -857,9 +1139,9 @@ async fn disconnect(
     Authed(principal): Authed,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    require_admin(&principal)?;
     let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
     let tx = open(&mut conn, &principal).await?;
+    may_manage(&tx, &principal, id).await?;
     // Deleting the connection removes its files and passages through the cascading keys.
     let removed = tx
         .sql()
@@ -892,9 +1174,18 @@ async fn sync_now(
     Authed(principal): Authed,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    require_admin(&principal)?;
     let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
     let tx = open(&mut conn, &principal).await?;
+    may_manage(&tx, &principal, id).await?;
+    let is_mailbox: bool = tx
+        .sql()
+        .query_opt("SELECT kind IN ('outlook_mail', 'zoom') FROM connections WHERE id = $1", &[&id])
+        .await
+        .map_err(ApiError::internal)?
+        .is_some_and(|row| row.get(0));
+    if is_mailbox {
+        return Err(ApiError::BadRequest("this connection has no files to sync"));
+    }
     let exists = tx
         .sql()
         .query_opt("SELECT 1 FROM connections WHERE id = $1", &[&id])
@@ -913,4 +1204,66 @@ async fn sync_now(
     .await?;
     tx.commit().await?;
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Whether this person may change or remove a connection. A workspace connection belongs to the
+/// administrators; a private one belongs to the person who connected it alone, not even to an
+/// administrator, who is told it does not exist.
+pub(crate) async fn may_manage(tx: &crate::db::TenantTx<'_>, principal: &Principal, id: Uuid) -> Result<(), ApiError> {
+    let row = tx
+        .sql()
+        .query_opt("SELECT visibility, owner FROM connections WHERE id = $1", &[&id])
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or(ApiError::NotFound)?;
+    if row.get::<_, String>(0) == "private" {
+        if row.get::<_, Option<String>>(1).as_deref() == Some(principal.user.as_str()) {
+            Ok(())
+        } else {
+            Err(ApiError::NotFound)
+        }
+    } else {
+        require_admin(principal)
+    }
+}
+
+#[derive(Deserialize)]
+struct ScopeRequest {
+    scope: String,
+}
+
+/// Changes who a connection's files are for. Only the person who connected it may, and only an
+/// administrator may open it to the whole workspace. Going private hides every file at once; going
+/// to the workspace brings each file's own sharing back at the next sync, which starts now.
+async fn set_scope(
+    State(state): State<AppState>,
+    Authed(principal): Authed,
+    Path(id): Path<Uuid>,
+    Json(request): Json<ScopeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let scope = match request.scope.as_str() {
+        "private" => "private",
+        "workspace" => {
+            require_admin(&principal)?;
+            "workspace"
+        }
+        _ => return Err(ApiError::BadRequest("unknown scope")),
+    };
+    let mut conn = state.pool.get().await.map_err(ApiError::internal)?;
+    let tx = open(&mut conn, &principal).await?;
+    let changed = tx
+        .sql()
+        .execute(
+            "UPDATE connections SET visibility = $2 WHERE id = $1 AND owner = $3",
+            &[&id, &scope, &principal.user],
+        )
+        .await
+        .map_err(ApiError::internal)?;
+    if changed == 0 {
+        return Err(ApiError::NotFound);
+    }
+    queue::enqueue(&tx, id).await?;
+    tx.audit(&principal.user, "connection_scope_changed", &json!({ "connection": id, "scope": scope })).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "scope": scope })))
 }

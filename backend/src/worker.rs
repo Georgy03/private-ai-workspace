@@ -12,8 +12,9 @@ use crate::{
     Error, Result,
     auth::TenantId,
     connectors::{
-        Connector, ConnectorError, RefreshingToken, google::GoogleConnector,
-        microsoft::MicrosoftConnector,
+        Connector, ConnectorError, RefreshingToken, RotatedToken, docusign::DocusignConnector,
+        dropbox::DropboxConnector, google::GoogleConnector, microsoft::MicrosoftConnector,
+        quickbooks::QuickbooksConnector,
     },
     db::TenantTx,
     oauth::{Kind, OAuthSettings},
@@ -35,7 +36,7 @@ async fn build(
     oauth: &OAuthSettings,
     tenant: TenantId,
     connection: uuid::Uuid,
-) -> Result<Option<Box<dyn Connector>>> {
+) -> Result<Option<(Box<dyn Connector>, Option<RotatedToken>)>> {
     let state = {
         let mut conn = queue::checkout(pool).await?;
         let tx = TenantTx::begin(&mut conn, tenant).await?;
@@ -51,17 +52,24 @@ async fn build(
         .get(tenant, &refresh_token_name(tenant, connection))
         .await?
         .ok_or(Error::Connector(ConnectorError::Unauthorized))?;
-    let tokens = Box::new(RefreshingToken::new(
+    let refreshing = RefreshingToken::new(
         provider.token_url.clone(),
         provider.client_id.clone(),
         provider.client_secret.clone(),
         refresh,
-    )?);
-    // The person who connected the source can read everything it returns.
-    let connected_by: Vec<String> = state.config["connected_by"]
+    )?
+    .with_basic_auth(provider.basic_auth);
+    let rotated = refreshing.rotated_token();
+    let tokens = Box::new(refreshing);
+    // The person who connected the source can read everything it returns, under their sign-in ID
+    // and under the email of the provider account they connected.
+    let mut connected_by: Vec<String> = state.config["connected_by"]
         .as_str()
         .map(|user| vec![format!("user:{user}")])
         .unwrap_or_default();
+    if let Some(email) = state.config["account_email"].as_str().and_then(crate::connectors::email_principal) {
+        connected_by.push(email);
+    }
     let connector: Box<dyn Connector> = match kind {
         Kind::Microsoft365 => {
             let drive = state.config["drive_id"]
@@ -83,8 +91,25 @@ async fn build(
         Kind::GoogleDrive => Box::new(
             GoogleConnector::new(tokens, &provider.api_base)?.always_readable_by(connected_by),
         ),
+        Kind::Dropbox => {
+            // Files are downloaded from a different host than the one that answers other calls.
+            let content = provider.api_base.replace("api.dropboxapi.com", "content.dropboxapi.com");
+            Box::new(DropboxConnector::new(tokens, &provider.api_base, &content)?.always_readable_by(connected_by))
+        }
+        // A mailbox connected for sending has no files, and is never queued; if one ever is, stop.
+        Kind::OutlookMail | Kind::Zoom => return Ok(None),
+        Kind::QuickBooks => {
+            let realm = state.config["realm_id"].as_str().ok_or_else(|| Error::Config("connection has no QuickBooks company".into()))?;
+            let company = state.config["company_name"].as_str().unwrap_or("QuickBooks");
+            Box::new(QuickbooksConnector::new(tokens, &provider.api_base, realm, company)?.always_readable_by(connected_by))
+        }
+        Kind::DocuSign => {
+            let account = state.config["account_id"].as_str().ok_or_else(|| Error::Config("connection has no account".into()))?;
+            let base = state.config["base_uri"].as_str().ok_or_else(|| Error::Config("connection has no API address".into()))?;
+            Box::new(DocusignConnector::new(tokens, base, account)?.always_readable_by(connected_by))
+        }
     };
-    Ok(Some(connector))
+    Ok(Some((connector, Some(rotated))))
 }
 
 /// Syncs every connection that is due, once. Returns how many it handled.
@@ -100,10 +125,16 @@ pub async fn run_once(
     };
     for (tenant, connection) in &due {
         let outcome = match build(pool, secrets, oauth, *tenant, *connection).await {
-            Ok(Some(connector)) => {
-                sync_connection(pool, *tenant, *connection, connector.as_ref(), extractor)
+            Ok(Some((connector, rotated))) => {
+                let result = sync_connection(pool, *tenant, *connection, connector.as_ref(), extractor)
                     .await
-                    .map(|_| ())
+                    .map(|_| ());
+                // A provider that replaces refresh tokens as they are used (DocuSign) would
+                // otherwise lock the connection out once the old one lapsed.
+                if let Some(new) = rotated.and_then(|slot| slot.lock().unwrap().take()) {
+                    secrets.put(*tenant, &refresh_token_name(*tenant, *connection), &new).await?;
+                }
+                result
             }
             Ok(None) => Err(Error::TenantMismatch),
             Err(error) => Err(error),
@@ -195,6 +226,10 @@ pub async fn run_forever(
     analyzer: Option<Arc<dyn crate::knowledge::Analyzer>>,
     agent_model: Option<Arc<dyn crate::agent_runner::AgentModel>>,
 ) {
+    // Deletes agent work whose time is up.
+    tokio::spawn(crate::retention::retention_forever(pool.clone()));
+    // Starts the recurring tasks that have come due.
+    tokio::spawn(crate::schedules::schedules_forever(pool.clone()));
     // Runs the tasks people give to shared agents.
     if let Some(model) = agent_model {
         tokio::spawn(crate::agent_runner::agents_forever(

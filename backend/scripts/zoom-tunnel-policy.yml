@@ -1,0 +1,9 @@
+# Development only: the https tunnel Zoom signs in through (Zoom refuses http://localhost).
+# Only the sign-in return address is let through; everything else on the dev server stays private.
+on_http_request:
+  - expressions:
+      - "req.url.path != '/oauth/callback'"
+    actions:
+      - type: deny
+        config:
+          status_code: 404

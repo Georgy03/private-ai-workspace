@@ -1,0 +1,14 @@
+# Nothing here may ever reach an image or an upload: build output, the plain-text copy of synced files,
+# and every file of secrets.
+target
+.dev-state
+.env
+.env.*
+*.log
+.git
+tests
+scripts
+examples
+Dockerfile
+.dockerignore
+railway.*.toml

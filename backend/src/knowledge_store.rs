@@ -51,6 +51,7 @@ pub struct PendingDocument {
 pub async fn documents_to_analyse(tx: &TenantTx<'_>, limit: i64) -> Result<Vec<PendingDocument>> {
     let sql = format!(
         "SELECT d.id, d.name, d.content_hash FROM documents d
+         JOIN connections c ON c.id = d.connection_id AND c.visibility = 'workspace'
          LEFT JOIN document_analysis a ON a.tenant_id = d.tenant_id AND a.document_id = d.id
          WHERE d.status = 'indexed' AND (
                a.document_id IS NULL
@@ -655,6 +656,7 @@ pub async fn profile_input(tx: &TenantTx<'_>) -> Result<(ProfileInput, i64)> {
         .query(
             "SELECT d.name, a.doc_type, a.summary FROM document_analysis a
              JOIN documents d ON d.tenant_id = a.tenant_id AND d.id = a.document_id
+             JOIN connections c ON c.id = d.connection_id AND c.visibility = 'workspace'
              WHERE a.status = 'done' AND a.summary <> '' ORDER BY a.analyzed_at DESC LIMIT 120",
             &[],
         )
@@ -672,6 +674,8 @@ pub async fn profile_input(tx: &TenantTx<'_>) -> Result<(ProfileInput, i64)> {
         .query(
             "SELECT e.name, e.kind, count(ev.document_id) AS n FROM entities e
              JOIN entity_evidence ev ON ev.entity_id = e.id
+             JOIN documents d ON d.tenant_id = ev.tenant_id AND d.id = ev.document_id
+             JOIN connections c ON c.id = d.connection_id AND c.visibility = 'workspace'
              WHERE e.status <> 'rejected' GROUP BY e.id ORDER BY n DESC, e.name LIMIT 40",
             &[],
         )
@@ -680,7 +684,15 @@ pub async fn profile_input(tx: &TenantTx<'_>) -> Result<(ProfileInput, i64)> {
         .map(|row| (row.get(0), row.get(1), row.get(2)))
         .collect();
     let facts = sql
-        .query("SELECT statement FROM facts WHERE status <> 'rejected' ORDER BY last_seen_at DESC LIMIT 40", &[])
+        .query(
+            "SELECT f.statement FROM facts f WHERE f.status <> 'rejected'
+               AND EXISTS (SELECT 1 FROM fact_evidence ev
+                           JOIN documents d ON d.tenant_id = ev.tenant_id AND d.id = ev.document_id
+                           JOIN connections c ON c.id = d.connection_id AND c.visibility = 'workspace'
+                           WHERE ev.fact_id = f.id)
+             ORDER BY f.last_seen_at DESC LIMIT 40",
+            &[],
+        )
         .await?
         .into_iter()
         .map(|row| row.get(0))
@@ -728,9 +740,12 @@ pub async fn overview(tx: &TenantTx<'_>) -> Result<Overview> {
     };
     let docs = one(sql
         .query_one(
-            "SELECT (SELECT count(*) FROM documents WHERE status = 'indexed'),
-                    (SELECT count(*) FROM document_analysis WHERE status = 'done'),
-                    (SELECT count(*) FROM document_analysis WHERE status = 'failed')",
+            "SELECT (SELECT count(*) FROM documents d JOIN connections c ON c.id = d.connection_id
+                      WHERE d.status = 'indexed' AND c.visibility = 'workspace'),
+                    (SELECT count(*) FROM document_analysis a JOIN documents d ON d.tenant_id = a.tenant_id AND d.id = a.document_id
+                      JOIN connections c ON c.id = d.connection_id AND c.visibility = 'workspace' WHERE a.status = 'done'),
+                    (SELECT count(*) FROM document_analysis a JOIN documents d ON d.tenant_id = a.tenant_id AND d.id = a.document_id
+                      JOIN connections c ON c.id = d.connection_id AND c.visibility = 'workspace' WHERE a.status = 'failed')",
             &[],
         )
         .await?);
@@ -771,4 +786,23 @@ pub async fn overview(tx: &TenantTx<'_>) -> Result<Overview> {
         facts_stale: facts[4],
         relationships: sql.query_one("SELECT count(*) FROM relationships WHERE status <> 'rejected'", &[]).await?.get(0),
     })
+}
+
+/// Removes what was learned from files that are now private to one person, so nothing from them
+/// reaches the firm-wide profile, counts or lists. An unconfirmed suggestion left with no
+/// supporting file disappears; a confirmed one is kept and marked outdated, as when a file changes.
+pub async fn forget_private(tx: &TenantTx<'_>) -> Result<u64> {
+    let sql = tx.sql();
+    let private = "SELECT d.id FROM documents d JOIN connections c ON c.id = d.connection_id WHERE c.visibility = 'private'";
+    let mut removed = 0;
+    for table in ["fact_evidence", "entity_evidence", "relationship_evidence", "document_analysis"] {
+        removed += sql.execute(&format!("DELETE FROM {table} WHERE document_id IN ({private})"), &[]).await?;
+    }
+    if removed > 0 {
+        sql.execute("DELETE FROM facts f WHERE f.status = 'suggested' AND NOT EXISTS (SELECT 1 FROM fact_evidence ev WHERE ev.fact_id = f.id)", &[]).await?;
+        sql.execute("UPDATE facts f SET status = 'outdated' WHERE f.status = 'verified' AND NOT EXISTS (SELECT 1 FROM fact_evidence ev WHERE ev.fact_id = f.id)", &[]).await?;
+        sql.execute("DELETE FROM relationships r WHERE NOT EXISTS (SELECT 1 FROM relationship_evidence ev WHERE ev.relationship_id = r.id)", &[]).await?;
+        sql.execute("DELETE FROM entities e WHERE e.status = 'suggested' AND NOT EXISTS (SELECT 1 FROM entity_evidence ev WHERE ev.entity_id = e.id)", &[]).await?;
+    }
+    Ok(removed)
 }
