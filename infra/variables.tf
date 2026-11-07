@@ -85,39 +85,3 @@ variable "google_client_secret" {
   default     = ""
   sensitive   = true
 }
-
-variable "microsoft_client_id" {
-  description = "Application (client) ID of the Microsoft sign-in app: one multi-tenant registration used for every firm. Leave empty to turn Microsoft sign-in off."
-  type        = string
-  default     = ""
-}
-
-variable "microsoft_client_secret" {
-  description = "Client secret of the Microsoft sign-in app. Pass it as TF_VAR_microsoft_client_secret."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "microsoft_firms" {
-  description = "One entry per firm that signs in with Microsoft. The key is a short name (lowercase letters, digits and hyphens, up to 29); firm_id is the firm's ID in this service; entra_tenant_id is the firm's Microsoft tenant ID."
-  type = map(object({
-    firm_id         = string
-    entra_tenant_id = string
-  }))
-  default = {}
-
-  validation {
-    condition     = alltrue([for name in keys(var.microsoft_firms) : can(regex("^[a-z0-9-]{1,29}$", name))])
-    error_message = "Each Microsoft firm name must be 1 to 29 lowercase letters, digits or hyphens."
-  }
-
-  validation {
-    condition = alltrue([
-      for firm in values(var.microsoft_firms) :
-      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", firm.firm_id)) &&
-      can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", firm.entra_tenant_id))
-    ])
-    error_message = "firm_id and entra_tenant_id must each be a lowercase UUID."
-  }
-}

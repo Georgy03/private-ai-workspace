@@ -59,11 +59,10 @@ output "identity_provider_redirect_uri" {
 }
 
 output "sign_in_providers" {
-  description = "The providers the desktop app may offer."
+  description = "The providers made here. Each firm's Microsoft provider is added by workspace-cloud, not listed here."
   value = concat(
     ["COGNITO"],
     aws_cognito_identity_provider.google[*].provider_name,
-    [for provider in aws_cognito_identity_provider.microsoft : provider.provider_name],
   )
 }
 

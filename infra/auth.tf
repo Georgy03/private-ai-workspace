@@ -72,8 +72,13 @@ resource "aws_cognito_user_pool_client" "desktop" {
   supported_identity_providers = concat(
     ["COGNITO"],
     aws_cognito_identity_provider.google[*].provider_name,
-    [for provider in aws_cognito_identity_provider.microsoft : provider.provider_name],
   )
+
+  # Each firm's Microsoft provider is added to this list by `workspace-cloud` when the firm is made, so
+  # OpenTofu must not set it back to its own shorter list.
+  lifecycle {
+    ignore_changes = [supported_identity_providers]
+  }
   prevent_user_existence_errors = "ENABLED"
   enable_token_revocation       = true
 

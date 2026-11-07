@@ -1,5 +1,3 @@
-import json
-import os
 import unittest
 
 import handler
@@ -7,6 +5,24 @@ import handler
 FIRM_A = "11111111-1111-4111-8111-111111111111"
 FIRM_B = "22222222-2222-4222-8222-222222222222"
 POOL = "us-east-2_Pool"
+
+
+class FakeSsm:
+    """The parameter store: provider name -> firm ID, under the path the function reads."""
+
+    class exceptions:
+        class ParameterNotFound(Exception):
+            pass
+
+    def __init__(self, firms):
+        self.params = {handler.PARAMETER_PATH + name: firm for name, firm in firms.items()}
+        self.asked = []
+
+    def get_parameter(self, Name):
+        self.asked.append(Name)
+        if Name not in self.params:
+            raise self.exceptions.ParameterNotFound()
+        return {"Parameter": {"Name": Name, "Value": self.params[Name]}}
 
 
 class FakeCognito:
@@ -37,17 +53,17 @@ def event(provider="Google", email="Sam@Firm.example", verified="true", source="
 
 class PreSignUp(unittest.TestCase):
     def setUp(self):
-        os.environ["FIRM_BY_PROVIDER"] = json.dumps({"ms-acme": FIRM_A})
+        self.ssm = FakeSsm({"ms-acme": FIRM_A})
 
     def refused(self, outgoing, cognito):
         with self.assertRaises(handler.NotInvited) as raised:
-            handler.handler(outgoing, None, cognito)
+            handler.handler(outgoing, None, cognito, self.ssm)
         self.assertEqual(cognito.links, [], "nothing may be linked for someone who is refused")
         return str(raised.exception)
 
     def test_an_invited_person_signing_in_with_google_is_linked_to_their_invitation(self):
         cognito = FakeCognito([invited()])
-        result = handler.handler(event(), None, cognito)
+        result = handler.handler(event(), None, cognito, self.ssm)
         self.assertEqual(cognito.filters, ['email = "sam@firm.example"'])
         self.assertEqual(cognito.links, [{
             "UserPoolId": POOL,
@@ -80,7 +96,7 @@ class PreSignUp(unittest.TestCase):
 
     def test_microsoft_works_only_for_a_person_invited_to_the_firm_that_provider_belongs_to(self):
         cognito = FakeCognito([invited(tenant=FIRM_A)])
-        handler.handler(event(provider="ms-acme", verified="false"), None, cognito)
+        handler.handler(event(provider="ms-acme", verified="false"), None, cognito, self.ssm)
         self.assertEqual(cognito.links[0]["SourceUser"]["ProviderName"], "ms-acme")
         # The same address invited to a different firm: refused, whatever the email says.
         self.refused(event(provider="ms-acme"), FakeCognito([invited(tenant=FIRM_B)]))
@@ -88,8 +104,22 @@ class PreSignUp(unittest.TestCase):
     def test_a_provider_that_is_not_a_known_firms_is_refused(self):
         for provider in ["ms-unknown", "Facebook", "COGNITO", ""]:
             self.refused(event(provider=provider), FakeCognito([invited()]))
-        os.environ["FIRM_BY_PROVIDER"] = json.dumps({"ms-acme": "not-a-uuid"})
+        self.ssm.params[handler.PARAMETER_PATH + "ms-acme"] = "not-a-uuid"
         self.refused(event(provider="ms-acme"), FakeCognito([invited()]))
+
+    def test_removing_a_firms_record_stops_its_sign_ins_at_once(self):
+        handler.handler(event(provider="ms-acme"), None, FakeCognito([invited()]), self.ssm)
+        del self.ssm.params[handler.PARAMETER_PATH + "ms-acme"]
+        self.refused(event(provider="ms-acme"), FakeCognito([invited()]))
+
+    def test_a_provider_name_that_could_point_somewhere_else_is_never_looked_up(self):
+        for provider in ["ms-../other/x", "ms-", "ms-UPPER", "ms-" + "a" * 40, "ms-a/b", "ms-a b"]:
+            self.refused(event(provider=provider, subject="1"), FakeCognito([invited()]))
+        self.assertEqual(self.ssm.asked, [], "a name that does not look like ours must not reach the parameter store")
+
+    def test_a_firm_id_written_in_capitals_still_matches_the_invitation(self):
+        self.ssm.params[handler.PARAMETER_PATH + "ms-acme"] = " " + FIRM_A.upper() + "\n"
+        handler.handler(event(provider="ms-acme"), None, FakeCognito([invited(tenant=FIRM_A)]), self.ssm)
 
     def test_an_address_that_could_alter_the_search_is_refused_before_cognito_is_asked(self):
         cognito = FakeCognito([invited()])
@@ -101,7 +131,7 @@ class PreSignUp(unittest.TestCase):
         cognito = FakeCognito([])
         for source in ["PreSignUp_AdminCreateUser", "PreSignUp_SignUp"]:
             outgoing = event(source=source)
-            self.assertIs(handler.handler(outgoing, None, cognito), outgoing)
+            self.assertIs(handler.handler(outgoing, None, cognito, self.ssm), outgoing)
         self.assertEqual((cognito.filters, cognito.links), ([], []))
 
 

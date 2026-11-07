@@ -13,17 +13,20 @@ Two rules keep one firm out of another:
   people invited to that same firm may use it. Microsoft's email claim is not proof of identity across
   tenants, so the provider, not the email, decides the firm.
 
-Settings (environment):
-  FIRM_BY_PROVIDER  JSON object: Microsoft provider name -> firm ID, e.g. {"ms-acme": "<uuid>"}
+Which firm a Microsoft provider belongs to is read from the AWS parameter store, one parameter per provider
+(`/prism/signin/microsoft/<provider>` holds the firm's ID), written by `workspace-cloud provision-firm` and
+`add-microsoft`. A provider with no parameter is refused, so removing the parameter stops its sign-ins at once.
 """
 
-import json
 import os
 import re
 
 # No quote or backslash, because the address goes into a Cognito filter expression.
 _EMAIL = re.compile(r'^[^@\s"\\]{1,64}@[^@\s"\\]{1,255}\.[^@\s"\\]{2,63}$')
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# The names `workspace-cloud` gives Microsoft providers: "ms-", then letters, digits and hyphens.
+_PROVIDER = re.compile(r"^ms-[a-z0-9-]{1,29}$")
+PARAMETER_PATH = os.environ.get("FIRM_PARAMETER_PATH", "/prism/signin/microsoft/")
 
 
 class NotInvited(Exception):
@@ -41,7 +44,17 @@ def _attribute(user, name):
     return None
 
 
-def handler(event, context=None, client=None):
+def _firm_of(provider, ssm):
+    """The firm a Microsoft provider belongs to, or None if it is not one we made."""
+    if not _PROVIDER.match(provider):
+        return None
+    try:
+        return ssm.get_parameter(Name=PARAMETER_PATH + provider)["Parameter"]["Value"].strip().lower()
+    except ssm.exceptions.ParameterNotFound:
+        return None
+
+
+def handler(event, context=None, client=None, ssm=None):
     # Accounts made by an administrator, and sign-ups, are not outside sign-ins.
     if event.get("triggerSource") != "PreSignUp_ExternalProvider":
         return event
@@ -49,6 +62,10 @@ def handler(event, context=None, client=None):
         import boto3  # only inside Lambda, where it is provided
 
         client = boto3.client("cognito-idp")
+    if ssm is None:
+        import boto3
+
+        ssm = boto3.client("ssm")
 
     provider, _, subject = str(event.get("userName", "")).partition("_")
     attributes = event.get("request", {}).get("userAttributes", {})
@@ -61,9 +78,8 @@ def handler(event, context=None, client=None):
         if str(attributes.get("email_verified", "")).lower() != "true":
             raise _deny()
     else:
-        firms = json.loads(os.environ.get("FIRM_BY_PROVIDER", "{}"))
-        firm = firms.get(provider)
-        if firm is None or not _UUID.match(str(firm)):
+        firm = _firm_of(provider, ssm)
+        if firm is None or not _UUID.match(firm):
             raise _deny()
 
     pool = event["userPoolId"]

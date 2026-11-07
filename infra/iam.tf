@@ -227,6 +227,25 @@ data "aws_iam_policy_document" "provisioner" {
     resources = ["arn:${local.partition}:kms:${var.region}:${local.account_id}:alias/prism-tenant-*"]
   }
 
+  # A firm's Microsoft sign-in (`workspace-cloud provision-firm --microsoft-tenant`, `add-microsoft`,
+  # `remove-microsoft`): the provider, the record of which firm it belongs to, and the app's list of providers.
+  statement {
+    sid = "ManageFirmMicrosoftSignIn"
+    actions = [
+      "cognito-idp:CreateIdentityProvider",
+      "cognito-idp:DeleteIdentityProvider",
+      "cognito-idp:DescribeUserPoolClient",
+      "cognito-idp:UpdateUserPoolClient",
+    ]
+    resources = [aws_cognito_user_pool.main.arn]
+  }
+
+  statement {
+    sid       = "RecordWhichFirmAProviderBelongsTo"
+    actions   = ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:GetParametersByPath"]
+    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.firm_parameter_path}*"]
+  }
+
   statement {
     sid       = "RemoveFirmFiles"
     actions   = ["s3:DeleteObject", "s3:DeleteObjectVersion"]

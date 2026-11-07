@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates only what the first deployment needs: sign-in (the user pool, its app, the administrators group, the
-# Google and Microsoft providers and the pre sign-up function) and the limited IAM user the Railway services
+# Google provider and the pre sign-up function) and the limited IAM user the Railway services
 # use for connector tokens. It does NOT create the network (with its NAT gateway), the RDS database, the
 # buckets or the audit tools that the rest of this folder describes; the database is Neon and those can wait.
 #
@@ -14,9 +14,9 @@ exec tofu apply \
   -target=aws_cognito_user_pool_domain.main \
   -target=aws_cognito_user_group.firm_admin \
   -target=aws_cognito_identity_provider.google \
-  -target=aws_cognito_identity_provider.microsoft \
   -target=aws_lambda_function.presignup \
   -target=aws_lambda_permission.presignup \
   -target=aws_iam_role_policy.presignup \
   -target=aws_iam_user_policy.services_token_keys \
+  -target=aws_iam_user_policy.services_sign_in_lookup \
   "$@"

@@ -42,14 +42,14 @@ row-level security in `../backend`.
 
 You need the AWS CLI and OpenTofu, signed in as an administrator of the account (`aws sts get-caller-identity`
 shows the account), and region `us-east-2`. This creates **13 small resources and no running servers**: the sign-in
-user pool, its app, the administrators group, the Google and Microsoft providers, the pre sign-up function with its
+user pool, its app, the administrators group, the Google provider, the pre sign-up function with its
 role and log, and one limited IAM user for the Railway services. It does not create the network (and its NAT
 gateway), the RDS database, the buckets or the audit tools that the rest of this folder describes. Cost: Cognito and
 Lambda are free at this size, each firm's key is about $1 a month, and logs are pennies. Check current pricing.
 
 1. **Protect the account** (console, 5 minutes). Turn on multi-factor for the root user and delete any root access
    keys. Under Billing, Budgets, make a monthly cost budget (for example $50) with an email alert.
-2. **Keep the state safe.** The state file will hold the Google and Microsoft secrets, so use an encrypted, versioned
+2. **Keep the state safe.** The state file will hold the Google secret, so use an encrypted, versioned
    bucket (the name must be unique; this one uses your account number):
    ```sh
    BUCKET=prism-tofu-state-$(aws sts get-caller-identity --query Account --output text)
@@ -70,9 +70,9 @@ Lambda are free at this size, each firm's key is about $1 a month, and logs are 
    EOF
    ```
 3. **Settings.** Copy `terraform.tfvars.example` to `terraform.tfvars` and set `alert_email` (the only required
-   setting). Leave the Google and Microsoft settings empty for now: sign-in with a temporary password works without them.
-4. **Create it.** `tofu init`, then `./apply-core.sh`. Read the plan and answer `yes`. It says **11 to add** until
-   Google and Microsoft are switched on (the other two are those providers). Then run **`./finish-setup.sh`**, which does
+   setting). Leave the Google settings empty for now: sign-in with a temporary password works without them.
+4. **Create it.** `tofu init`, then `./apply-core.sh`. Read the plan and answer `yes`. It says a few resources fewer until
+   Google is switched on (one more is that provider). Then run **`./finish-setup.sh`**, which does
    steps 5 to 8 below for you, in order, and can be run again safely. The steps are written out in case you prefer to do
    them by hand.
 5. **Read what it made.** `tofu output`, and note `cognito_issuer`, `cognito_desktop_client_id`,
@@ -128,35 +128,38 @@ it against AWS's current documentation). Each firm gets its own provider, tied t
 function lets only people invited to that firm use it. Google is one provider for every firm, and only an email
 that Google itself has verified is accepted.
 
+**It is automatic.** The providers are not in Terraform. `backend/scripts/firm.sh provision "Name" --microsoft-tenant <id>`
+(or `add-microsoft` later, `remove-microsoft` to end it) makes the firm's provider through AWS, records which firm it
+belongs to in the parameter store under `/prism/signin/microsoft/` (the pre sign-up function reads that), and allows it
+on the app, undoing the earlier steps if a later one fails. Adding a firm changes no infrastructure code.
+
 **One-time setup (yours, in two consoles)**
 
-1. Run `tofu apply` once without any providers, then read the two outputs: `cognito_hosted_ui_url` (the app's
-   `PRIVATE_AI_COGNITO_DOMAIN`) and `identity_provider_redirect_uri`.
+1. Run `./apply-core.sh`, then read the two outputs: `cognito_hosted_ui_url` (the app's `PRIVATE_AI_COGNITO_DOMAIN`)
+   and `identity_provider_redirect_uri`.
 2. *Google.* In Google Cloud, create an OAuth client of type Web application. Add `identity_provider_redirect_uri` as
    an authorized redirect URI. On the consent screen use only the `openid`, `email` and `profile` scopes (these need no
    Google review) and publish the app, or only listed test users can sign in. Keep this app separate from the Drive
-   connector's: it must not be able to read files.
+   connector's: it must not be able to read files. Put its client ID in `terraform.tfvars` and its secret in
+   `TF_VAR_google_client_secret`, then apply (the secret ends up in the state file, so keep the state encrypted).
 3. *Microsoft.* In the Microsoft Entra admin center, register one application for "Accounts in any organizational
    directory (multitenant)". Add `identity_provider_redirect_uri` as a Web redirect URI. Create a client secret (it
    expires, at most after 24 months: put the date in a calendar). Under Token configuration add the optional claim
    `email` to the ID token. Delegated Microsoft Graph permissions `openid`, `email` and `profile` are enough. Consider
-   publisher verification, or some firms' Microsoft settings will block people from consenting.
-4. Put the client IDs in `terraform.tfvars` and the secrets in the environment, so they never sit in a file:
-   `TF_VAR_google_client_secret` and `TF_VAR_microsoft_client_secret`. They end up in the state file, so keep the
-   state in an encrypted bucket (see "Before a real deploy").
+   publisher verification, or some firms' Microsoft settings will block people from consenting. Save its ID and secret
+   in `backend/.env.signin` (git-ignored) as `MICROSOFT_SIGNIN_CLIENT_ID` and `MICROSOFT_SIGNIN_CLIENT_SECRET`.
+   The secret is sent only to Cognito, never kept in the parameter store.
 
 **For each firm that uses Microsoft**
 
 1. Ask the firm's Microsoft administrator to approve the app for their tenant:
-   `https://login.microsoftonline.com/<their tenant id>/adminconsent?client_id=<microsoft_client_id>`
-2. Add the firm to `microsoft_firms` in `terraform.tfvars` and apply:
-   ```hcl
-   microsoft_firms = {
-     acme = { firm_id = "<the firm's id from provision-firm>", entra_tenant_id = "<their Microsoft tenant id>" }
-   }
-   ```
-   The name (`acme`) becomes the provider `ms-acme`. Adding a firm this way changes the infrastructure, unlike the
-   firm's encryption key, which the provisioner makes at runtime.
+   `https://login.microsoftonline.com/<their tenant id>/adminconsent?client_id=<MICROSOFT_SIGNIN_CLIENT_ID>`
+2. Run `backend/scripts/firm.sh add-microsoft <firm id> <their Microsoft tenant id>`.
+
+The desktop app's sign-in screen asks for a work email. The server looks up the invitation for that address
+(`POST /v1/sign-in/route`), finds the firm's Microsoft provider and tells the app which one to open, so nobody
+needs to know a provider name or claim an email domain. An address that was never invited, or whose firm has no
+Microsoft sign-in, gets the same empty answer. The lookup is limited to 60 requests a minute in total.
 
 **To invite a person** (use their work email; the firm ID comes from `provision-firm`):
 

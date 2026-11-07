@@ -6,15 +6,19 @@
 # tokens carry the invited account's firm and groups. Anyone not invited is refused, which keeps the
 # pool from filling with accounts that have no firm.
 #
-# Google is one provider for all firms. Microsoft cannot be: Cognito checks that a token's issuer is the
-# provider's issuer exactly, and a Microsoft work account's issuer belongs to that firm's own Microsoft
-# tenant, so the shared "common" address fails. Each firm therefore gets its own Microsoft provider,
-# tied to its tenant and to its firm ID, and only people invited to that firm can use it.
+# Google is one provider for all firms, made here. Microsoft cannot be: Cognito checks that a token's issuer is
+# the provider's issuer exactly, and a Microsoft work account's issuer belongs to that firm's own Microsoft
+# tenant, so the shared "common" address fails. Each firm therefore gets its own Microsoft provider, tied to
+# its tenant and to its firm ID, and only people invited to that firm can use it.
+#
+# Those providers are NOT made here: `workspace-cloud provision-firm --microsoft-tenant <id>` (or
+# `add-microsoft`) makes the provider, records which firm it belongs to in the parameter store, and allows it on
+# the app, so adding a firm never changes this code. The function below reads that record.
 
 locals {
-  google_enabled    = var.google_client_id != ""
-  microsoft_enabled = var.microsoft_client_id != ""
-  microsoft_firms   = local.microsoft_enabled ? var.microsoft_firms : {}
+  google_enabled = var.google_client_id != ""
+  # Where each Microsoft provider's firm is recorded (backend/src/signin.rs, PARAMETER_PATH).
+  firm_parameter_path = "/prism/signin/microsoft/"
 }
 
 # ---- the pre sign-up function ----
@@ -54,6 +58,12 @@ data "aws_iam_policy_document" "presignup" {
   }
 
   statement {
+    sid       = "ReadWhichFirmAProviderBelongsTo"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.firm_parameter_path}*"]
+  }
+
+  statement {
     sid       = "FindAndLinkInvitedPeople"
     actions   = ["cognito-idp:ListUsers", "cognito-idp:AdminLinkProviderForUser"]
     resources = [aws_cognito_user_pool.main.arn]
@@ -78,8 +88,7 @@ resource "aws_lambda_function" "presignup" {
 
   environment {
     variables = {
-      # Which firm each Microsoft provider belongs to. The function refuses anyone invited to another firm.
-      FIRM_BY_PROVIDER = jsonencode({ for name, firm in local.microsoft_firms : "ms-${name}" => firm.firm_id })
+      FIRM_PARAMETER_PATH = local.firm_parameter_path
     }
   }
 
@@ -106,30 +115,6 @@ resource "aws_cognito_identity_provider" "google" {
     client_id        = var.google_client_id
     client_secret    = var.google_client_secret
     authorize_scopes = "openid email profile"
-  }
-
-  attribute_mapping = {
-    email    = "email"
-    username = "sub"
-  }
-}
-
-resource "aws_cognito_identity_provider" "microsoft" {
-  for_each      = local.microsoft_firms
-  user_pool_id  = aws_cognito_user_pool.main.id
-  provider_name = "ms-${each.key}"
-  provider_type = "OIDC"
-
-  provider_details = {
-    client_id                 = var.microsoft_client_id
-    client_secret             = var.microsoft_client_secret
-    authorize_scopes          = "openid email profile"
-    attributes_request_method = "GET"
-    oidc_issuer               = "https://login.microsoftonline.com/${each.value.entra_tenant_id}/v2.0"
-    authorize_url             = "https://login.microsoftonline.com/${each.value.entra_tenant_id}/oauth2/v2.0/authorize"
-    token_url                 = "https://login.microsoftonline.com/${each.value.entra_tenant_id}/oauth2/v2.0/token"
-    attributes_url            = "https://graph.microsoft.com/oidc/userinfo"
-    jwks_uri                  = "https://login.microsoftonline.com/${each.value.entra_tenant_id}/discovery/v2.0/keys"
   }
 
   attribute_mapping = {
