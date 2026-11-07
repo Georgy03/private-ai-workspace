@@ -1,0 +1,4 @@
+# Built by `tofu plan`: the packaged sign-up function.
+.build/
+# Python's cache from running the function's tests.
+__pycache__/

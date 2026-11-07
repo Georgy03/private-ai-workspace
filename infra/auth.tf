@@ -11,6 +11,11 @@ resource "aws_cognito_user_pool" "main" {
     allow_admin_create_user_only = true
   }
 
+  # People who sign in with Google or Microsoft must have been invited (signin.tf).
+  lambda_config {
+    pre_sign_up = aws_lambda_function.presignup.arn
+  }
+
   software_token_mfa_configuration {
     enabled = true
   }
@@ -45,6 +50,14 @@ resource "aws_cognito_user_pool" "main" {
   }
 }
 
+# The server treats members of this group as the firm's administrators (backend/src/auth.rs, ADMIN_GROUP):
+# they connect sources and change the firm's settings. It appears in tokens as "cognito:groups".
+resource "aws_cognito_user_group" "firm_admin" {
+  name         = "firm_admin"
+  user_pool_id = aws_cognito_user_pool.main.id
+  description  = "Can connect sources and change the firm's settings."
+}
+
 resource "aws_cognito_user_pool_client" "desktop" {
   name         = "${local.prefix}-desktop"
   user_pool_id = aws_cognito_user_pool.main.id
@@ -56,9 +69,13 @@ resource "aws_cognito_user_pool_client" "desktop" {
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
   callback_urls                        = var.callback_urls
   logout_urls                          = var.callback_urls
-  supported_identity_providers         = ["COGNITO"]
-  prevent_user_existence_errors        = "ENABLED"
-  enable_token_revocation              = true
+  supported_identity_providers = concat(
+    ["COGNITO"],
+    aws_cognito_identity_provider.google[*].provider_name,
+    [for provider in aws_cognito_identity_provider.microsoft : provider.provider_name],
+  )
+  prevent_user_existence_errors = "ENABLED"
+  enable_token_revocation       = true
 
   id_token_validity      = 60
   access_token_validity  = 60

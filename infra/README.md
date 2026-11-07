@@ -14,7 +14,8 @@ the first `tofu plan` in a real account will likely need small fixes.
 | `kms.tf` | A platform encryption key and a separate audit-log key, both with rotation. Each firm's own key is made later, at runtime |
 | `storage.tf` | The shared data bucket (private, versioned, TLS only, KMS-encrypted uploads required) and a write-once audit bucket |
 | `database.tf` | Postgres on RDS: private, encrypted, forced TLS, 14-day backups, deletion protection, admin password held by AWS |
-| `auth.tf` | Cognito user pool with required MFA, admin-only user creation, and a `custom:tenant_id` attribute that users cannot change |
+| `auth.tf` | Cognito user pool with required MFA, admin-only user creation, a `custom:tenant_id` attribute that users cannot change, and the `firm_admin` group |
+| `signin.tf`, `presignup/` | Sign in with Google and Microsoft for invited people only: the providers, and the pre sign-up function (Python, with tests) that links each person to their invitation |
 | `iam.tf` | Service roles; the `tenant_access` role that limits a firm's files and keys to one firm per session; the permissions to use firm keys for connector tokens; and the provisioner that makes them |
 | `audit.tf` | CloudTrail with file-level data events, GuardDuty, alerts for medium-or-higher findings and root sign-in, a monthly budget alarm |
 
@@ -37,10 +38,149 @@ row-level security in `../backend`.
 `database.tf` creates the database on RDS, the all-AWS option. The project's current plan is Neon instead
 (see `../backend/README.md`), in which case `database.tf` is not needed and should not be applied as it is.
 
+## Setting up the AWS account (only what the first deployment needs)
+
+You need the AWS CLI and OpenTofu, signed in as an administrator of the account (`aws sts get-caller-identity`
+shows the account), and region `us-east-2`. This creates **13 small resources and no running servers**: the sign-in
+user pool, its app, the administrators group, the Google and Microsoft providers, the pre sign-up function with its
+role and log, and one limited IAM user for the Railway services. It does not create the network (and its NAT
+gateway), the RDS database, the buckets or the audit tools that the rest of this folder describes. Cost: Cognito and
+Lambda are free at this size, each firm's key is about $1 a month, and logs are pennies. Check current pricing.
+
+1. **Protect the account** (console, 5 minutes). Turn on multi-factor for the root user and delete any root access
+   keys. Under Billing, Budgets, make a monthly cost budget (for example $50) with an email alert.
+2. **Keep the state safe.** The state file will hold the Google and Microsoft secrets, so use an encrypted, versioned
+   bucket (the name must be unique; this one uses your account number):
+   ```sh
+   BUCKET=prism-tofu-state-$(aws sts get-caller-identity --query Account --output text)
+   aws s3api create-bucket --bucket $BUCKET --region us-east-2 --create-bucket-configuration LocationConstraint=us-east-2
+   aws s3api put-public-access-block --bucket $BUCKET --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+   aws s3api put-bucket-versioning --bucket $BUCKET --versioning-configuration Status=Enabled
+   aws s3api put-bucket-encryption --bucket $BUCKET --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"}}]}'
+   cat > backend.tf <<EOF
+   terraform {
+     backend "s3" {
+       bucket       = "$BUCKET"
+       key          = "core/terraform.tfstate"
+       region       = "us-east-2"
+       encrypt      = true
+       use_lockfile = true
+     }
+   }
+   EOF
+   ```
+3. **Settings.** Copy `terraform.tfvars.example` to `terraform.tfvars` and set `alert_email` (the only required
+   setting). Leave the Google and Microsoft settings empty for now: sign-in with a temporary password works without them.
+4. **Create it.** `tofu init`, then `./apply-core.sh`. Read the plan (it should say 13 to add) and answer `yes`.
+5. **Read what it made.** `tofu output`, and note `cognito_issuer`, `cognito_desktop_client_id`,
+   `cognito_hosted_ui_url` and `services_iam_user`. Put the first two into `backend/.env.railway` as `COGNITO_ISSUER`
+   and `COGNITO_CLIENT_ID` (the desktop app's `PRIVATE_AI_COGNITO_DOMAIN` is the third).
+6. **Make the services' access key** and append it to your private file without printing it (the secret is shown
+   only once, so this writes it straight in):
+   ```sh
+   aws iam create-access-key --user-name "$(tofu output -raw services_iam_user)" \
+     --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text \
+     | awk '{printf "AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n",$1,$2}' >> ../backend/.env.railway
+   ```
+7. **Make the first firm and its key**, with your own administrator sign-in and the provisioner's database login:
+   ```sh
+   cd ../backend && set -a && . ./.env.neon && set +a
+   DATABASE_URL="postgresql://prism_prov:$NEON_PROV_PASSWORD@$NEON_POOLED_HOST/$NEON_DB?sslmode=require" \
+   DATABASE_CA_FILE=/etc/ssl/cert.pem AWS_REGION=us-east-2 \
+   cargo run --bin workspace-cloud -- provision-firm "Your firm's name"
+   ```
+   It prints `tenant_id` (the firm's ID) and `kms_key_arn`.
+8. **Test the real thing.** This is the first contact with real KMS: it stores, reads back and deletes a test secret
+   through the production path, using the services' key and the API's database login.
+   ```sh
+   set -a && . ./.env.neon && . ./.env.railway && set +a
+   DATABASE_URL="postgresql://prism_api:$NEON_API_PASSWORD@$NEON_POOLED_HOST/$NEON_DB?sslmode=require" \
+   DATABASE_CA_FILE=/etc/ssl/cert.pem \
+   cargo run --bin workspace-cloud -- check-secrets <tenant_id from step 7>
+   ```
+   It should print `ok`. An access-denied message names what is missing (usually a key tag or the encryption context
+   in the policy): fix that before going further.
+9. **Invite yourself** (see below) and **put the settings on Railway** with `backend/scripts/railway-vars.sh --deploy`.
+   Railway also needs `OAUTH_REDIRECT_URI` (the API's Railway domain plus `/oauth/callback`) and at least one
+   connector's client ID and secret in `backend/.env.railway`.
+
+Not part of this: Claude through Bedrock for the desktop app (turn on model access in the Bedrock console, in a
+region and account set to zero data retention) is a separate step, and is not needed to run the cloud service.
+
+## Signing in with Google and Microsoft
+
+People sign in with the Google or Microsoft account they already use, and an administrator decides who gets in.
+
+**How it works.** An administrator first creates each person in the pool (their email, verified, and their firm in
+`custom:tenant_id`). When that person signs in with Google or Microsoft for the first time, the pre sign-up function
+(`presignup/handler.py`) finds the invitation and links the outside identity to it, so the tokens carry the invited
+account's firm and groups. Anyone not invited is refused, so the pool never fills with accounts that have no firm.
+Cognito's own multi-factor setting does not apply to these sign-ins: each firm's Google or Microsoft account policy
+does, so ask every firm to require multi-factor there.
+
+**Why Microsoft is set up once per firm.** Cognito requires a token's issuer to match the provider's issuer
+exactly, and a Microsoft work account's issuer belongs to the firm's own Microsoft tenant, so Microsoft's shared
+"common" address does not work (this is a widely reported Cognito limitation; I found no official fix, so confirm
+it against AWS's current documentation). Each firm gets its own provider, tied to its tenant and its firm ID, and the
+function lets only people invited to that firm use it. Google is one provider for every firm, and only an email
+that Google itself has verified is accepted.
+
+**One-time setup (yours, in two consoles)**
+
+1. Run `tofu apply` once without any providers, then read the two outputs: `cognito_hosted_ui_url` (the app's
+   `PRIVATE_AI_COGNITO_DOMAIN`) and `identity_provider_redirect_uri`.
+2. *Google.* In Google Cloud, create an OAuth client of type Web application. Add `identity_provider_redirect_uri` as
+   an authorized redirect URI. On the consent screen use only the `openid`, `email` and `profile` scopes (these need no
+   Google review) and publish the app, or only listed test users can sign in. Keep this app separate from the Drive
+   connector's: it must not be able to read files.
+3. *Microsoft.* In the Microsoft Entra admin center, register one application for "Accounts in any organizational
+   directory (multitenant)". Add `identity_provider_redirect_uri` as a Web redirect URI. Create a client secret (it
+   expires, at most after 24 months: put the date in a calendar). Under Token configuration add the optional claim
+   `email` to the ID token. Delegated Microsoft Graph permissions `openid`, `email` and `profile` are enough. Consider
+   publisher verification, or some firms' Microsoft settings will block people from consenting.
+4. Put the client IDs in `terraform.tfvars` and the secrets in the environment, so they never sit in a file:
+   `TF_VAR_google_client_secret` and `TF_VAR_microsoft_client_secret`. They end up in the state file, so keep the
+   state in an encrypted bucket (see "Before a real deploy").
+
+**For each firm that uses Microsoft**
+
+1. Ask the firm's Microsoft administrator to approve the app for their tenant:
+   `https://login.microsoftonline.com/<their tenant id>/adminconsent?client_id=<microsoft_client_id>`
+2. Add the firm to `microsoft_firms` in `terraform.tfvars` and apply:
+   ```hcl
+   microsoft_firms = {
+     acme = { firm_id = "<the firm's id from provision-firm>", entra_tenant_id = "<their Microsoft tenant id>" }
+   }
+   ```
+   The name (`acme`) becomes the provider `ms-acme`. Adding a firm this way changes the infrastructure, unlike the
+   firm's encryption key, which the provisioner makes at runtime.
+
+**To invite a person** (use their work email; the firm ID comes from `provision-firm`):
+
+```sh
+aws cognito-idp admin-create-user --user-pool-id <pool id> --username sam@firm.example \
+  --user-attributes Name=email,Value=sam@firm.example Name=email_verified,Value=true Name=custom:tenant_id,Value=<firm id> \
+  --message-action SUPPRESS
+aws cognito-idp admin-add-user-to-group --user-pool-id <pool id> --username sam@firm.example --group-name firm_admin   # administrators only
+```
+
+`--message-action SUPPRESS` sends no email, because they sign in with Google or Microsoft. For a firm with neither,
+leave it off: Cognito emails a temporary password and they set up an authenticator app. Their address must match the
+one their Google or Microsoft account uses.
+
+**What to expect.** The sign-in page Cognito shows lists Google and each firm's `ms-<name>`; the desktop app does not
+choose for the person yet. After linking, a person's first sign-in may show an "already found an entry for username"
+message: signing in a second time works (this is how Cognito behaves when linking happens in a pre sign-up function;
+if it does not clear on the second try, check the function's log in CloudWatch). Nothing here has been applied to
+an AWS account or tried against real Google or Microsoft sign-in: the function's logic is tested, and the Terraform
+validates, but the first real sign-in will probably need small fixes.
+
+Test the function: `cd infra/presignup && python3 test_handler.py`.
+
 ## Not included yet
 
 The API and worker containers (ECS, load balancer, container registry), the Bedrock credential
-broker for the desktop app, Microsoft and Google federation in Cognito, VPC flow logs, a web
+broker for the desktop app, VPC flow logs, a web
 application firewall, and the pgvector extension setup. Each is a later step.
 
 ## Check without deploying
