@@ -23,6 +23,7 @@ import type {
   AttachedFile,
   ChatOptions,
   CloudStatus,
+  SignInChoice,
   Connection,
   ConnectorsView,
   DocumentPreview,
@@ -191,8 +192,8 @@ export async function cloudStatus(): Promise<CloudStatus> {
   return isTauri() ? invoke("cloud_status") : browserCloudStatus();
 }
 
-export async function cloudSignIn(): Promise<CloudStatus> {
-  if (isTauri()) return invoke("cloud_sign_in");
+export async function cloudSignIn(choice: SignInChoice = { kind: "any" }): Promise<CloudStatus> {
+  if (isTauri()) return invoke("cloud_sign_in", { choice });
   browserCloud = { ...browserCloud, signed_in: true };
   return browserCloudStatus();
 }

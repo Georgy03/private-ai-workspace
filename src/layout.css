@@ -235,3 +235,15 @@ nav button.active svg { color: var(--accent); }
 .connector-search:focus-within { border-color: var(--ink, #111); }
 .connector-search input { flex: 1; border: 0; outline: 0; font: inherit; font-size: 14px; background: transparent; min-width: 0; }
 .connector-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Sign-in dialog */
+.signin { width: min(420px, calc(100vw - 40px)); }
+.signin-body { display: grid; gap: 10px; }
+.signin-body form { display: grid; gap: 8px; }
+.signin-body input[type="email"] { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 0 11px; font-size: 13px; background: transparent; color: var(--ink); }
+.signin-wide { width: 100%; min-height: 38px; }
+.signin-or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 11px; }
+.signin-or::before, .signin-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.signin-link { justify-self: center; border: 0; background: none; color: var(--muted); font-size: 12px; text-decoration: underline; cursor: pointer; }
+.signin-link:disabled { cursor: default; opacity: .5; }
+.signin-waiting { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }

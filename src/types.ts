@@ -5,6 +5,13 @@ export type ProviderState = "ready" | "unavailable" | "failed";
 export type Origin = "local" | "cloud";
 export type CloudState = "not_configured" | "off" | "signed_out" | "ready" | "unavailable";
 
+/** How the person chose to sign in to the firm cloud (matches SignInChoice in src-tauri/src/cloud.rs). */
+export type SignInChoice =
+  | { kind: "any" }
+  | { kind: "google" }
+  | { kind: "password" }
+  | { kind: "microsoft"; email: string };
+
 export interface CloudStatus {
   state: CloudState;
   message: string;

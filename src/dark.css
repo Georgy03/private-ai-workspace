@@ -1014,3 +1014,5 @@ html[data-theme="dark"] .home-ask { box-shadow: none; }
 html[data-theme="dark"] .receipt-link, html[data-theme="dark"] .show-work > button { color: #e4defa; }
 /* The line under the empty-chat heading crosses the bright prism: keep it readable. */
 html[data-theme="dark"] .chat-empty > p { color: #d3d6dc; text-shadow: 0 0 14px rgba(8, 8, 16, .85), 0 0 3px rgba(8, 8, 16, .6); }
+
+html[data-theme="dark"] .signin-body input[type="email"] { border-color: var(--line); color: var(--ink); }

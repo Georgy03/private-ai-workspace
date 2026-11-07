@@ -41,6 +41,7 @@ import { KnowledgeView } from "./Knowledge";
 import { Logo } from "./Logo";
 import { Shimmer } from "./Shimmer";
 import { PrismBackdrop } from "./PrismBackdrop";
+import { SignInDialog } from "./SignInDialog";
 import {
   cancelIndex,
   chooseFolder,
@@ -700,6 +701,7 @@ function SettingsDialog({ cloud, theme, onTheme, usage, onUsage, onCloud, onClos
   const limitCents = Math.round(Number(limitText) * 100);
   const limitValid = limitText.trim() !== "" && Number.isFinite(limitCents) && limitCents >= 0 && limitCents <= 10_000_000;
 
+  const [signingIn, setSigningIn] = useState(false);
   const changeCloud = async (action: () => Promise<CloudStatus>) => {
     setCloudBusy(true);
     try {
@@ -749,6 +751,7 @@ function SettingsDialog({ cloud, theme, onTheme, usage, onUsage, onCloud, onClos
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
+      {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignIn={async (choice) => onCloud(await cloudSignIn(choice))} />}
       <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
         <header><div><span className="modal-icon"><Settings size={19} /></span><div><strong>Workspace settings</strong><span>Local search and AI answers</span></div></div><button onClick={onClose}><X size={19} /></button></header>
         <section className="provider-fields cloud-settings"><label id="appearance-label">Appearance</label>
@@ -769,7 +772,7 @@ function SettingsDialog({ cloud, theme, onTheme, usage, onUsage, onCloud, onClos
             </label>
             {cloud.signed_in
               ? <button className="secondary" disabled={cloudBusy} onClick={() => void changeCloud(cloudSignOut)}>Sign out</button>
-              : <button className="secondary" disabled={!cloud.configured || cloudBusy} onClick={() => void changeCloud(cloudSignIn)}>{cloudBusy ? "Waiting for sign-in…" : "Sign in"}</button>}
+              : <button className="secondary" disabled={!cloud.configured || cloudBusy} onClick={() => setSigningIn(true)}>Sign in</button>}
           </div>
         </section>
         {usage && (

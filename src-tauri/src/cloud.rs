@@ -1124,16 +1124,74 @@ impl Cloud {
         Ok(id_token)
     }
 
+    /// Asks the firm's server which Microsoft sign-in belongs to this email. No one is signed in yet, so the
+    /// question carries nothing but the email; the answer is only a provider name, checked before it is used.
+    async fn microsoft_provider(
+        &self,
+        settings: &Settings,
+        email: &str,
+    ) -> Result<String, CloudError> {
+        let base = settings
+            .api_base
+            .as_deref()
+            .ok_or(CloudError::NotConfigured)?;
+        let url = format!(
+            "{}/v1/sign-in/route",
+            check_base(base, cfg!(debug_assertions))?
+        );
+        let response = self
+            .http
+            .post(url)
+            .timeout(Duration::from_secs(10))
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .map_err(|_| CloudError::Unavailable("the server could not be reached".into()))?;
+        let status = response.status().as_u16();
+        if status == 429 {
+            return Err(CloudError::Unavailable(
+                "too many sign-in attempts just now; wait a minute and try again".into(),
+            ));
+        }
+        if !(200..300).contains(&status) {
+            return Err(CloudError::Unavailable(
+                "the server could not look up your sign-in; try again".into(),
+            ));
+        }
+        let reply: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|_| CloudError::Unavailable("the sign-in lookup was not understood".into()))?;
+        match reply["provider"].as_str() {
+            Some(name) if valid_microsoft_provider(name) => Ok(name.to_string()),
+            Some(_) => Err(CloudError::Unavailable(
+                "the sign-in lookup returned something unexpected".into(),
+            )),
+            None => Err(CloudError::Unavailable(
+                "no Microsoft sign-in was found for that email. Ask your administrator to invite you, or choose another way to sign in".into(),
+            )),
+        }
+    }
+
     /// Signs in through the browser. `open` is given the sign-in address to show the person. The
     /// browser comes back to a one-shot listener on this machine, which accepts exactly one
     /// callback carrying the state value generated here.
-    pub async fn sign_in(&self, open: impl FnOnce(&str)) -> Result<(), CloudError> {
+    pub async fn sign_in(
+        &self,
+        choice: &SignInChoice,
+        open: impl FnOnce(&str),
+    ) -> Result<(), CloudError> {
+        let mut routing = choice.fixed_routing();
         let settings = self.settings();
         let client = settings
             .cognito_client_id
             .clone()
             .ok_or(CloudError::NotConfigured)?;
         let base = self.cognito_base(&settings)?;
+        if let SignInChoice::Microsoft { email } = choice {
+            let provider = self.microsoft_provider(&settings, &clean_email(email)?).await?;
+            routing = Some(("identity_provider", provider));
+        }
 
         let mut random = [0u8; 48];
         rand::fill(&mut random);
@@ -1160,6 +1218,9 @@ impl Cloud {
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state);
+        if let Some((name, value)) = routing {
+            url.query_pairs_mut().append_pair(name, &value);
+        }
         open(url.as_str());
 
         let code = tokio::time::timeout(SIGN_IN_TIMEOUT, wait_for_callback(&listener, &state))
@@ -1190,6 +1251,60 @@ impl Cloud {
         *self.tokens.lock().unwrap() = Some(tokens);
         Ok(())
     }
+}
+
+/// How the person chose to sign in. Each choice only decides which page Cognito shows first: who may
+/// actually get in is still decided by the server (invited people only), so a wrong choice gets nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SignInChoice {
+    /// Cognito's own page, listing every way in.
+    Any,
+    Google,
+    /// The person's work email: the server finds the invitation and so the firm's own Microsoft sign-in.
+    Microsoft { email: String },
+    /// An email address and password (with an authenticator app).
+    Password,
+}
+
+impl SignInChoice {
+    /// The one extra setting that sends the browser straight to a sign-in that needs no lookup.
+    fn fixed_routing(&self) -> Option<(&'static str, String)> {
+        match self {
+            Self::Google => Some(("identity_provider", "Google".into())),
+            Self::Password => Some(("identity_provider", "COGNITO".into())),
+            Self::Any | Self::Microsoft { .. } => None,
+        }
+    }
+}
+
+/// An email address, lowercased, or a plain-language reason it cannot be used.
+fn clean_email(email: &str) -> Result<String, CloudError> {
+    let bad = || CloudError::Unavailable("enter your work email, like name@yourfirm.com".into());
+    let email = email.trim().to_lowercase();
+    let (name, host) = email.split_once('@').ok_or_else(bad)?;
+    let fine = email.len() <= 254
+        && !name.is_empty()
+        && host.contains('.')
+        && !host.contains('@')
+        && email.chars().all(|c| c.is_ascii_graphic());
+    if fine {
+        Ok(email)
+    } else {
+        Err(bad())
+    }
+}
+
+/// A provider name the server may hand back: what `workspace-cloud` makes (`ms-<firm>-<6 hex>`), nothing else,
+/// so a wrong or hostile reply cannot add anything to the sign-in address.
+fn valid_microsoft_provider(name: &str) -> bool {
+    name.strip_prefix("ms-").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest.len() <= 29
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    })
 }
 
 /// Waits for the browser to arrive with the right state. Anything else (a favicon request, a
@@ -1700,7 +1815,7 @@ mod tests {
             let handle = cloud.clone();
             async move {
                 let outcome = handle
-                    .sign_in(|url| {
+                    .sign_in(&SignInChoice::Any, |url| {
                         tx.lock()
                             .unwrap()
                             .take()
@@ -2195,5 +2310,121 @@ mod tests {
             "{error:?}"
         );
         assert!(!error.message().contains("no longer exists"));
+    }
+
+    #[test]
+    fn fixed_choices_route_directly_and_emails_and_provider_names_are_checked() {
+        assert_eq!(SignInChoice::Any.fixed_routing(), None);
+        assert_eq!(SignInChoice::Microsoft { email: "a@b.com".into() }.fixed_routing(), None);
+        assert_eq!(
+            SignInChoice::Google.fixed_routing(),
+            Some(("identity_provider", "Google".into()))
+        );
+        assert_eq!(
+            SignInChoice::Password.fixed_routing(),
+            Some(("identity_provider", "COGNITO".into()))
+        );
+        assert_eq!(clean_email("  Sam@Acme-Law.COM ").unwrap(), "sam@acme-law.com");
+        for bad in ["", "sam", "@acme.com", "sam@", "sam@acme", "a@b@c.com", "sa m@acme.com"] {
+            assert!(clean_email(bad).is_err(), "{bad:?}");
+        }
+        for good in ["ms-acme-b72431", "ms-a-123456"] {
+            assert!(valid_microsoft_provider(good), "{good}");
+        }
+        for bad in [
+            "", "ms-", "Google", "COGNITO", "ms-Acme", "ms-a&scope=x", "ms-a b", "ms-a/b",
+            &format!("ms-{}", "a".repeat(30)),
+        ] {
+            assert!(!valid_microsoft_provider(bad), "{bad:?}");
+        }
+        let parsed: SignInChoice =
+            serde_json::from_str(r#"{"kind":"microsoft","email":"a@b.com"}"#).unwrap();
+        assert_eq!(parsed, SignInChoice::Microsoft { email: "a@b.com".into() });
+    }
+
+    /// The address the browser is sent to for a choice, with the sign-in left waiting (it is then dropped).
+    async fn address_for(
+        cloud: Cloud,
+        choice: SignInChoice,
+    ) -> Result<reqwest::Url, CloudError> {
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let tx = StdMutex::new(Some(tx));
+        let task = tokio::spawn(async move {
+            cloud
+                .sign_in(&choice, |url| {
+                    tx.lock().unwrap().take().unwrap().send(url.to_string()).unwrap();
+                })
+                .await
+        });
+        match rx.await {
+            Ok(url) => {
+                task.abort();
+                Ok(reqwest::Url::parse(&url).unwrap())
+            }
+            // The sign-in stopped before it opened the browser: that is the reason to report.
+            Err(_) => Err(task.await.unwrap().unwrap_err()),
+        }
+    }
+
+    fn pair(url: &reqwest::Url, name: &str) -> Option<String> {
+        url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.to_string())
+    }
+
+    #[tokio::test]
+    async fn microsoft_sign_in_asks_the_server_for_the_providers_name_and_checks_the_answer() {
+        let asked = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let log = asked.clone();
+        let (server, _) = serve(move |request| {
+            assert_eq!(request.path, "/v1/sign-in/route");
+            log.lock().unwrap().push(request.body.clone());
+            let body = if request.body.contains("sam@acme.com") {
+                r#"{"provider":"ms-acme-b72431"}"#
+            } else if request.body.contains("evil@acme.com") {
+                r#"{"provider":"ms-a&scope=everything"}"#
+            } else {
+                r#"{"provider":null}"#
+            };
+            (200, body.into(), 0)
+        })
+        .await;
+        let ask = |email: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let cloud = cloud_for(dir.path(), &server, Some("https://idp.example.com"));
+            let choice = SignInChoice::Microsoft { email: email.into() };
+            async move {
+                let _keep = dir;
+                address_for(cloud, choice).await
+            }
+        };
+        // The browser is sent to that firm's sign-in, with the email lowercased and nothing else sent to the server.
+        let url = ask(" Sam@Acme.com ").await.unwrap();
+        assert_eq!(pair(&url, "identity_provider").as_deref(), Some("ms-acme-b72431"));
+        assert_eq!(pair(&url, "idp_identifier"), None);
+        assert_eq!(asked.lock().unwrap().clone(), [r#"{"email":"sam@acme.com"}"#]);
+        // No sign-in found: a plain reason, and the browser is never opened.
+        let none = ask("nobody@acme.com").await.unwrap_err().message();
+        assert!(none.contains("Ask your administrator"), "{none}");
+        // A strange provider name from the server is not put in the address.
+        assert!(ask("evil@acme.com").await.is_err());
+        // A malformed email never reaches the server.
+        let calls = asked.lock().unwrap().len();
+        assert!(ask("not-an-email").await.is_err());
+        assert_eq!(asked.lock().unwrap().len(), calls);
+    }
+
+    #[tokio::test]
+    async fn the_other_choices_open_the_right_page_without_asking_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://idp.example.com"));
+        let google = address_for(cloud, SignInChoice::Google).await.unwrap();
+        assert_eq!(pair(&google, "identity_provider").as_deref(), Some("Google"));
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://idp.example.com"));
+        let any = address_for(cloud, SignInChoice::Any).await.unwrap();
+        assert_eq!(pair(&any, "identity_provider"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://idp.example.com"));
+        let password = address_for(cloud, SignInChoice::Password).await.unwrap();
+        assert_eq!(pair(&password, "identity_provider").as_deref(), Some("COGNITO"));
     }
 }

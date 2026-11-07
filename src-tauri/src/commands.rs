@@ -1104,10 +1104,16 @@ pub async fn cloud_status(state: State<'_, Arc<AppState>>) -> AppResult<CloudSta
 }
 
 #[tauri::command]
-pub async fn cloud_sign_in(state: State<'_, Arc<AppState>>) -> AppResult<CloudStatus> {
+pub async fn cloud_sign_in(
+    state: State<'_, Arc<AppState>>,
+    choice: Option<crate::cloud::SignInChoice>,
+) -> AppResult<CloudStatus> {
     state
         .cloud
-        .sign_in(crate::cloud::open_browser)
+        .sign_in(
+            &choice.unwrap_or(crate::cloud::SignInChoice::Any),
+            crate::cloud::open_browser,
+        )
         .await
         .map_err(|error| AppError::Cloud(error.message()))?;
     Ok(state.cloud.status())

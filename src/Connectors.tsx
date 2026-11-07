@@ -3,6 +3,7 @@ import { Shimmer } from "./Shimmer";
 import { ZoomMeetings } from "./ZoomMeetings";
 import { ConnectorLogo } from "./ConnectorLogo";
 import { AlertTriangle, Check, LoaderCircle, Lock, Plus, RefreshCw, Search, Trash2, Users, X } from "lucide-react";
+import { SignInDialog } from "./SignInDialog";
 import { cloudConnect, cloudConnectionFiles, cloudConnectors, cloudDisconnect, cloudSetScope, cloudSignIn, cloudSyncNow } from "./api";
 import type { CloudStatus, Connection, ConnectorInfo, ConnectorsView, NameOnlyFile } from "./types";
 
@@ -96,6 +97,7 @@ export function ConnectorsPanel({ cloud, onCloud }: { cloud: CloudStatus; onClou
   const [waiting, setWaitingState] = useState<Waiting | null>(null);
   const waitingRef = useRef<Waiting | null>(null);
   const [busy, setBusy] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
   const [domains, setDomains] = useState("");
   // Narrowing the list: words to look for, a kind of connector, and only the ones already connected.
   const [search, setSearch] = useState("");
@@ -224,7 +226,8 @@ export function ConnectorsPanel({ cloud, onCloud }: { cloud: CloudStatus; onClou
       <div className="connectors-empty">
         <strong>Sign in to manage connectors.</strong>
         <p>Connectors copy files from your firm's accounts into the firm cloud index so they can be searched with your local files.</p>
-        <button className="primary" disabled={busy} onClick={() => void run(async () => onCloud(await cloudSignIn()))}>{busy ? "Waiting for sign-in…" : "Sign in"}</button>
+        <button className="primary" onClick={() => setSigningIn(true)}>Sign in</button>
+        {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignIn={async (choice) => onCloud(await cloudSignIn(choice))} />}
         {problem && <p className="connector-problem"><AlertTriangle size={14} /> {problem}</p>}
       </div>
     );
