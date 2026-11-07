@@ -2,3 +2,8 @@
 .build/
 # Python's cache from running the function's tests.
 __pycache__/
+# Your own account's settings: the state bucket (its name holds the account number), your values, and any local state.
+backend.tf
+terraform.tfvars
+*.tfstate
+*.tfstate.*

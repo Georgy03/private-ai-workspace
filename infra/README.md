@@ -71,7 +71,10 @@ Lambda are free at this size, each firm's key is about $1 a month, and logs are 
    ```
 3. **Settings.** Copy `terraform.tfvars.example` to `terraform.tfvars` and set `alert_email` (the only required
    setting). Leave the Google and Microsoft settings empty for now: sign-in with a temporary password works without them.
-4. **Create it.** `tofu init`, then `./apply-core.sh`. Read the plan (it should say 13 to add) and answer `yes`.
+4. **Create it.** `tofu init`, then `./apply-core.sh`. Read the plan and answer `yes`. It says **11 to add** until
+   Google and Microsoft are switched on (the other two are those providers). Then run **`./finish-setup.sh`**, which does
+   steps 5 to 8 below for you, in order, and can be run again safely. The steps are written out in case you prefer to do
+   them by hand.
 5. **Read what it made.** `tofu output`, and note `cognito_issuer`, `cognito_desktop_client_id`,
    `cognito_hosted_ui_url` and `services_iam_user`. Put the first two into `backend/.env.railway` as `COGNITO_ISSUER`
    and `COGNITO_CLIENT_ID` (the desktop app's `PRIVATE_AI_COGNITO_DOMAIN` is the third).

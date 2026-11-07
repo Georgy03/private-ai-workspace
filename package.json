@@ -12,6 +12,7 @@
     "tauri:dev": "tauri dev",
     "tauri:dev:test": "PRIVATE_AI_CONNECTOR_WORKSPACE_PROVIDER=anthropic tauri dev",
     "tauri:dev:cloud": "set -a && . ./backend/.env.devcloud && set +a && tauri dev",
+    "tauri:dev:staging": "set -a && . ./backend/.env.staging && set +a && PRIVATE_AI_CONNECTOR_WORKSPACE_PROVIDER=anthropic tauri dev",
     "tauri:dev:cloud:test": "set -a && . ./backend/.env.devcloud && set +a && PRIVATE_AI_CONNECTOR_WORKSPACE_PROVIDER=anthropic tauri dev",
     "tauri:build": "tauri build"
   },

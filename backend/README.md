@@ -97,6 +97,11 @@ app client ID, the AWS credentials for the token store, the firm key made by `pr
 address registered with each provider. The worker also refuses to start without at least one connector's client
 ID and secret. `.dockerignore` keeps `.env*`, `.dev-state` and build output out of the image and out of any upload.
 
+**Pointing the desktop app at it.** Put `PRIVATE_AI_CLOUD_API` (the `api` service's https address),
+`PRIVATE_AI_COGNITO_DOMAIN` (the user pool's sign-in address, `cognito_hosted_ui_url`) and
+`PRIVATE_AI_COGNITO_CLIENT_ID` in `backend/.env.staging` (git-ignored; public identifiers only), then run
+`npm run tauri:dev:staging`. The app signs in through Cognito for real, with no development token.
+
 **Known gaps in this setup:** the file reader is limited by resource limits only. The architecture asks for it
 to run with no network and no view of the file system, which Railway's containers cannot enforce, so a hostile
 file that breaks the parser would run with the service's own network access. Run the reader somewhere that can
