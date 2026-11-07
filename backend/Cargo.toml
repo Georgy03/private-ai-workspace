@@ -7,7 +7,9 @@ edition = "2024"
 aes-gcm = "0.11.1"
 async-trait = "0.1.92"
 aws-config = { version = "1.13.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cognitoidentityprovider = { version = "1.144.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1.129.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ssm = { version = "1.134.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 axum = "0.8.9"
 base64 = "0.23.1"
 calamine = "0.37"

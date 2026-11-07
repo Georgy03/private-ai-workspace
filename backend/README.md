@@ -91,6 +91,8 @@ so agents and company knowledge stay off until the Bedrock path is built.
 Migrations are not run by the services. Run `scripts/neon-migrate.sh` from a trusted machine before a release
 that adds one: it tests them on a copy of the database first. To make a firm and its key, run
 `workspace-cloud provision-firm "Firm name"` with the provisioner's credentials (see above).
+Add `--microsoft-tenant <id>` to also set up that firm's Microsoft sign-in, or run `workspace-cloud add-microsoft <firm id> <tenant>` /
+`remove-microsoft <firm id>` later; `scripts/firm.sh` wraps all three with the right settings (see `infra/README.md`).
 
 Before the services can run you need, outside Railway: the Cognito user pool (`infra/auth.tf`) with its issuer and
 app client ID, the AWS credentials for the token store, the firm key made by `provision-firm`, and the callback

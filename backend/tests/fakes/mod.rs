@@ -484,5 +484,6 @@ pub async fn token_endpoint(refresh_token: &'static str, calls: Arc<Mutex<u32>>)
     format!("{}/token", serve(router).await)
 }
 
+pub mod cognito;
 pub mod kms;
 pub mod more;

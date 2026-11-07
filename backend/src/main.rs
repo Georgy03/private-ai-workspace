@@ -34,20 +34,103 @@ async fn migrate() -> workspace_cloud::Result<()> {
     Ok(())
 }
 
-/// `workspace-cloud provision-firm "Firm name"` creates a firm together with its own encryption key,
-/// and prints the firm's ID (the `custom:tenant_id` of its people in Cognito) and the key's ARN. Run
-/// it with the `app_provisioner` database login and AWS credentials that may create KMS keys.
-async fn provision_firm() -> workspace_cloud::Result<()> {
-    let name = std::env::args().nth(2).unwrap_or_default();
+/// The settings the Microsoft sign-in commands need, or what is missing. They come from the environment:
+/// COGNITO_ISSUER and COGNITO_CLIENT_ID (the same ones the API uses) and the Microsoft sign-in app's
+/// MICROSOFT_SIGNIN_CLIENT_ID and MICROSOFT_SIGNIN_CLIENT_SECRET (a separate app from the connector's).
+async fn microsoft_sign_in() -> workspace_cloud::Result<(workspace_cloud::signin::AwsSignIn, workspace_cloud::signin::MicrosoftApp)> {
+    let need = |name: &str| std::env::var(name).ok().filter(|value| !value.trim().is_empty()).ok_or_else(|| workspace_cloud::Error::Config(format!("{name} is not set")));
+    let (issuer, client) = (need("COGNITO_ISSUER")?, need("COGNITO_CLIENT_ID")?);
+    let app = workspace_cloud::signin::MicrosoftApp { client_id: need("MICROSOFT_SIGNIN_CLIENT_ID")?, client_secret: need("MICROSOFT_SIGNIN_CLIENT_SECRET")? };
+    Ok((workspace_cloud::signin::AwsSignIn::from_env(&issuer, &client).await?, app))
+}
+
+/// A database connection with the provisioner's login (DATABASE_URL).
+async fn provisioner_connection() -> workspace_cloud::Result<deadpool_postgres::Object> {
     let settings = Settings::for_migration()?;
-    let pool = build_pool(&settings, 1)?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|error| workspace_cloud::Error::Config(format!("database: {error}")))?;
+    build_pool(&settings, 1)?.get().await.map_err(|error| workspace_cloud::Error::Config(format!("database: {error}")))
+}
+
+fn parse_firm_id(text: Option<String>, usage: &str) -> workspace_cloud::Result<workspace_cloud::auth::TenantId> {
+    text.and_then(|id| uuid::Uuid::parse_str(id.trim()).ok())
+        .map(workspace_cloud::auth::TenantId)
+        .ok_or_else(|| workspace_cloud::Error::Config(format!("usage: {usage}")))
+}
+
+/// `workspace-cloud provision-firm "Firm name" [--microsoft-tenant <Microsoft tenant ID>]` creates a firm
+/// together with its own encryption key, and prints the firm's ID (the `custom:tenant_id` of its people in
+/// Cognito) and the key's ARN. With `--microsoft-tenant` it also gives the firm Microsoft sign-in tied to
+/// that Microsoft tenant,. Run it with the `app_provisioner` database login and your own AWS sign-in.
+async fn provision_firm() -> workspace_cloud::Result<()> {
+    let usage = || workspace_cloud::Error::Config("usage: workspace-cloud provision-firm \"Firm name\" [--microsoft-tenant <Microsoft tenant ID>]".into());
+    let (mut name, mut microsoft) = (None, None);
+    let mut args = std::env::args().skip(2);
+    while let Some(argument) = args.next() {
+        if argument == "--microsoft-tenant" {
+            microsoft = Some(args.next().ok_or_else(usage)?);
+        } else if name.is_none() {
+            name = Some(argument);
+        } else {
+            return Err(usage());
+        }
+    }
+    let name = name.filter(|name| !name.trim().is_empty()).ok_or_else(usage)?;
+    // Everything Microsoft needs is checked before anything is made, so a typo leaves no firm half set up.
+    let sign_in = match &microsoft {
+        Some(tenant) => {
+            let tenant = workspace_cloud::signin::check_entra_tenant(tenant)?;
+            Some((tenant, microsoft_sign_in().await?))
+        }
+        None => None,
+    };
+    let conn = provisioner_connection().await?;
     let keys = workspace_cloud::kms::AwsKms::from_env().await;
     let (tenant, key) = workspace_cloud::kms::provision_firm(&conn, &keys, &name).await?;
     println!("tenant_id={}\nkms_key_arn={key}", tenant.0);
+    if let Some((entra, (setup, app))) = sign_in {
+        match workspace_cloud::signin::add_microsoft(&setup, tenant, &name, &entra, &app).await {
+            Ok(provider) => println!("microsoft_provider={provider}"),
+            Err(error) => {
+                return Err(workspace_cloud::Error::SignIn(format!(
+                    "the firm and its key were made, but Microsoft sign-in was not: {error}. Run add-microsoft {} {entra} once that is fixed",
+                    tenant.0
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `workspace-cloud add-microsoft <firm id> <Microsoft tenant ID>` gives an existing firm
+/// Microsoft sign-in.
+async fn add_microsoft_command() -> workspace_cloud::Result<()> {
+    let usage = "workspace-cloud add-microsoft <firm id> <Microsoft tenant ID>";
+    let mut args = std::env::args().skip(2);
+    let firm = parse_firm_id(args.next(), usage)?;
+    let entra = args.next().ok_or_else(|| workspace_cloud::Error::Config(format!("usage: {usage}")))?;
+    let entra = workspace_cloud::signin::check_entra_tenant(&entra)?;
+    let (setup, app) = microsoft_sign_in().await?;
+    let conn = provisioner_connection().await?;
+    let name: String = conn
+        .query_opt("SELECT name FROM tenants WHERE id = $1", &[&firm.0])
+        .await?
+        .map(|row| row.get(0))
+        .ok_or_else(|| workspace_cloud::Error::SignIn("there is no firm with that ID".into()))?;
+    let provider = workspace_cloud::signin::add_microsoft(&setup, firm, &name, &entra, &app).await?;
+    println!("microsoft_provider={provider}");
+    Ok(())
+}
+
+/// `workspace-cloud remove-microsoft <firm id>` takes a firm's Microsoft sign-in away, for example when it leaves.
+async fn remove_microsoft_command() -> workspace_cloud::Result<()> {
+    let firm = parse_firm_id(std::env::args().nth(2), "workspace-cloud remove-microsoft <firm id>")?;
+    let (setup, _) = microsoft_sign_in().await?;
+    let removed = workspace_cloud::signin::remove_microsoft(&setup, firm).await?;
+    if removed.is_empty() {
+        println!("that firm has no Microsoft sign-in");
+    }
+    for provider in removed {
+        println!("removed={provider}");
+    }
     Ok(())
 }
 
@@ -182,6 +265,8 @@ async fn run() -> workspace_cloud::Result<()> {
         Some("worker") => return worker().await,
         Some("provision-firm") => return provision_firm().await,
         Some("check-secrets") => return check_secrets().await,
+        Some("add-microsoft") => return add_microsoft_command().await,
+        Some("remove-microsoft") => return remove_microsoft_command().await,
         Some("download-model") => {
             // Fetches the meaning-search model once, so the server and the worker do not both
             // try to download it at the same moment.
@@ -208,6 +293,7 @@ async fn run() -> workspace_cloud::Result<()> {
         );
     }
     let secrets = secrets_from_env(settings.allow_insecure, &pool).await?;
+    let sign_in_route = sign_in_route(&settings).await;
     let app = api::router(AppState {
         verifier,
         jwks: Some(jwks),
@@ -216,6 +302,10 @@ async fn run() -> workspace_cloud::Result<()> {
         secrets,
         embedder: load_embedder(),
     });
+    let app = match sign_in_route {
+        Some(route) => app.merge(route),
+        None => app,
+    };
     let listener = tokio::net::TcpListener::bind(&settings.bind)
         .await
         .map_err(|error| workspace_cloud::Error::Config(format!("{}: {error}", settings.bind)))?;
@@ -224,6 +314,18 @@ async fn run() -> workspace_cloud::Result<()> {
         .with_graceful_shutdown(shutdown())
         .await
         .map_err(|error| workspace_cloud::Error::Config(error.to_string()))
+}
+
+/// The unauthenticated "which Microsoft sign-in is mine" route, if this server can look people up in Cognito.
+/// Without AWS access (local development) it is left out and the app shows Cognito's own page instead.
+async fn sign_in_route(settings: &Settings) -> Option<axum::Router> {
+    match workspace_cloud::signin::AwsSignIn::from_env(&settings.issuer, &settings.audience).await {
+        Ok(lookup) => Some(workspace_cloud::signin_api::routes(Arc::new(lookup))),
+        Err(error) => {
+            tracing::warn!(%error, "the Microsoft sign-in lookup is switched off");
+            None
+        }
+    }
 }
 
 async fn shutdown() {

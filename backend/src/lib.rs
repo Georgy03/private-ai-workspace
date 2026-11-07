@@ -31,6 +31,8 @@ pub mod schedules;
 pub mod schedules_api;
 pub mod secrets;
 pub mod server;
+pub mod signin;
+pub mod signin_api;
 pub mod sync;
 pub mod usage;
 pub mod worker;
@@ -52,6 +54,8 @@ pub enum Error {
     Analysis(String),
     /// Encrypting or opening a stored secret failed.
     Crypto(String),
+    /// Setting up or taking away a firm's Microsoft sign-in failed.
+    SignIn(String),
 }
 
 impl fmt::Display for Error {
@@ -70,6 +74,7 @@ impl fmt::Display for Error {
             Error::Embedding(reason) => write!(f, "embedding: {reason}"),
             Error::Analysis(reason) => write!(f, "analysis: {reason}"),
             Error::Crypto(reason) => write!(f, "secret store: {reason}"),
+            Error::SignIn(reason) => write!(f, "sign-in setup: {reason}"),
         }
     }
 }

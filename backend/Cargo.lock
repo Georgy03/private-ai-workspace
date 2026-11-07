@@ -323,6 +323,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-cognitoidentityprovider"
+version = "1.144.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875c6bdbad3573a2a234c3bfcee5582ce1cacef413edf87298be9480cd96dcea"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-kms"
 version = "1.129.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -343,6 +366,29 @@ dependencies = [
  "bytes",
  "fastrand",
  "http",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ssm"
+version = "1.134.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea410c52150b149fa31d7e32792a7785cc6aeba4284bbcc0198ab6b8f328af3"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "fastrand",
  "regex-lite",
  "tracing",
 ]
@@ -5280,7 +5326,9 @@ dependencies = [
  "aes-gcm",
  "async-trait",
  "aws-config",
+ "aws-sdk-cognitoidentityprovider",
  "aws-sdk-kms",
+ "aws-sdk-ssm",
  "axum",
  "base64 0.23.1",
  "calamine",
