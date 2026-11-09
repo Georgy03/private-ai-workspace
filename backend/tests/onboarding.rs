@@ -125,8 +125,12 @@ async fn a_new_person_starts_a_firm_with_its_own_key_and_becomes_its_administrat
     assert!(h.keys.lock().unwrap().tags.values().any(|tags| tags.contains(&("tenant".to_string(), firm_id.clone()))), "the key is tagged with the firm");
     // The person now belongs to that firm and administers it.
     let pool = h.pool.lock().unwrap();
-    assert_eq!(pool.users["Google_123"], firm_id);
-    assert_eq!(pool.groups["Google_123"], ["firm_admin"]);
+    // Not by editing the old account (the firm attribute can never be changed): the firm-less account is replaced by
+    // one that has the firm from the start, named by the address, with their Google identity linked to it.
+    assert!(!pool.users.contains_key("Google_123"), "the firm-less account is gone");
+    assert_eq!(pool.users["google_123@example.com"], firm_id);
+    assert_eq!(pool.groups["google_123@example.com"], ["firm_admin"]);
+    assert_eq!(pool.links, [("Google:123".to_string(), "google_123@example.com".to_string())]);
 }
 
 #[tokio::test]
@@ -172,14 +176,18 @@ async fn a_bad_firm_name_is_refused_before_a_key_is_made() {
 async fn if_the_person_cannot_be_attached_nothing_is_left_behind() {
     let h = harness(60).await;
     newcomer_in_pool(&h, "Google_123");
-    h.pool.lock().unwrap().fail.insert("AdminUpdateUserAttributes".into());
+    h.pool.lock().unwrap().fail.insert("AdminLinkProviderForUser".into());
     let (status, body) = start(&h, Some(&newcomer("Google_123")), "Sam").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(!body.contains("AdminUpdateUserAttributes") && !body.contains(POOL), "{body}");
+    assert!(!body.contains("AdminLinkProviderForUser") && !body.contains(POOL), "{body}");
+    // No half-made account is left to block the address.
+    assert!(!h.pool.lock().unwrap().users.contains_key("google_123@example.com"));
     assert!(firms(&h).await.is_empty(), "the firm row was taken back");
     assert_eq!(h.keys.lock().unwrap().scheduled_deletion.len(), 1, "the key was scheduled for deletion");
     // Trying again once the fault is gone works.
+    // (Their firm-less account was replaced during the failed try; signing in again makes it afresh.)
     h.pool.lock().unwrap().fail.clear();
+    newcomer_in_pool(&h, "Google_123");
     assert_eq!(start(&h, Some(&newcomer("Google_123")), "Sam").await.0, StatusCode::OK);
 }
 

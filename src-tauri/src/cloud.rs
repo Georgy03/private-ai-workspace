@@ -1125,12 +1125,14 @@ impl Cloud {
     }
 
     /// Starts a new firm for a person who has none: signs them in with Google (the account becomes theirs), asks the
-    /// server to make the firm with them as its administrator, and refreshes so their token carries the firm.
+    /// server to make the firm with them as its administrator, then signs them in again. The server replaces their
+    /// firm-less account with one that has the firm (the firm can only be given when an account is made), so the
+    /// first sign-in's token is spent; the second is quick because Google already knows them.
     pub async fn create_firm(
         &self,
         name: &str,
         with: &SignInChoice,
-        open: impl FnOnce(&str),
+        open: impl Fn(&str),
     ) -> Result<(), CloudError> {
         // Only the two sign-ins that need no invitation can start a firm.
         if !matches!(with, SignInChoice::Google | SignInChoice::MicrosoftPersonal) {
@@ -1139,13 +1141,15 @@ impl Cloud {
             ));
         }
         let name = clean_firm_name(name)?;
-        self.sign_in(with, open).await?;
-        self.finish_new_firm(&name).await
+        self.sign_in(with, &open).await?;
+        self.finish_new_firm(&name).await?;
+        self.sign_in(with, &open).await.map(|_| ()).map_err(|_| {
+            CloudError::Unavailable("your firm was made, but signing in to it did not finish. Use Sign in".into())
+        })
     }
 
     /// The part after sign-in, apart so it can be tried without a browser.
     async fn finish_new_firm(&self, name: &str) -> Result<(), CloudError> {
-        let settings = self.settings();
         let mut sent = false;
         let raw = self
             .authed(
@@ -1159,8 +1163,9 @@ impl Cloud {
             .await;
         let failure = match raw {
             Ok(raw) if raw.status == 200 => {
-                // The token held no firm; a fresh one does.
-                return self.refresh(&settings).await.map(|_| ());
+                // The account the token belonged to has been replaced by the firm's own, so it is spent.
+                self.sign_out();
+                return Ok(());
             }
             // Already in a firm: the sign-in is good, so the person stays signed in.
             Ok(raw) if raw.status == 409 => {
@@ -2581,18 +2586,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn starting_a_firm_posts_the_name_then_refreshes_so_the_token_carries_the_firm() {
+    async fn starting_a_firm_posts_the_name_then_drops_the_spent_token() {
         let (server, seen) = serve(|request| match request.path.as_str() {
             "/v1/onboarding/firm" => {
                 assert!(request.auth.as_deref().is_some_and(|a| a.contains("no-firm-token")));
                 assert_eq!(request.body, r#"{"name":"Sam's Tax Practice"}"#);
                 (200, r#"{"firm_id":"x"}"#.into(), 0)
             }
-            "/oauth2/token" => (
-                200,
-                r#"{"id_token":"token-with-firm","expires_in":3600}"#.into(),
-                0,
-            ),
             other => panic!("unexpected request {other}"),
         })
         .await;
@@ -2600,8 +2600,9 @@ mod tests {
         let cloud = cloud_for(dir.path(), &server, Some(&server));
         sign_in_tokens(&cloud, "no-firm-token", Some("refresh-1"), 3600);
         cloud.finish_new_firm("Sam's Tax Practice").await.unwrap();
-        assert_eq!(cloud.tokens.lock().unwrap().as_ref().unwrap().id_token, "token-with-firm");
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        // The old account was replaced, so its token is gone and the app signs in again to get one with the firm.
+        assert!(cloud.tokens.lock().unwrap().is_none());
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -375,29 +375,80 @@ impl crate::onboarding::Accounts for AwsSignIn {
     }
 
     async fn make_admin_of(&self, username: &str, firm: TenantId) -> Result<()> {
-        let attribute = cognito::types::AttributeType::builder()
-            .name("custom:tenant_id")
-            .value(firm.0.to_string())
-            .build()
-            .map_err(|error| Error::SignIn(error.to_string()))?;
-        self.cognito
-            .admin_update_user_attributes()
-            .user_pool_id(&self.pool_id)
-            .username(username)
-            .user_attributes(attribute)
-            .send()
-            .await
-            .map_err(|error| failed("could not attach the account to its firm", cognito::error::DisplayErrorContext(&error)))?;
-        if let Err(error) = self
+        // The firm attribute can only be given when an account is made (it can never be changed, so that nobody can
+        // move themselves into another firm). So a newcomer's firm-less account is swapped for one that has the firm,
+        // exactly as an invited person's is: a Cognito account named by the address, with their outside identity
+        // linked to it. They sign in once more to start using it.
+        let user = self
             .cognito
-            .admin_add_user_to_group()
+            .admin_get_user()
             .user_pool_id(&self.pool_id)
             .username(username)
-            .group_name(crate::auth::ADMIN_GROUP)
             .send()
             .await
-        {
-            return Err(failed("could not make the account its firm's administrator", cognito::error::DisplayErrorContext(&error)));
+            .map_err(|error| failed("could not read the account", cognito::error::DisplayErrorContext(&error)))?;
+        let attribute = |name: &str| user.user_attributes().iter().find(|a| a.name() == name).and_then(|a| a.value()).map(str::to_string);
+        let email = attribute("email").map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).ok_or_else(|| Error::SignIn("the account has no email address".into()))?;
+        let (provider, subject) = attribute("identities")
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .and_then(|list| {
+                let first = list.get(0)?;
+                Some((first.get("providerName")?.as_str()?.to_string(), first.get("userId")?.as_str()?.to_string()))
+            })
+            .ok_or_else(|| Error::SignIn("the account was not made by an outside sign-in".into()))?;
+
+        // Their firm-less account has nothing in it. It goes first, because the address can belong to one account.
+        self.cognito
+            .admin_delete_user()
+            .user_pool_id(&self.pool_id)
+            .username(username)
+            .send()
+            .await
+            .map_err(|error| failed("could not replace the account", cognito::error::DisplayErrorContext(&error)))?;
+        let attributes = [
+            ("email", email.clone()),
+            ("email_verified", "true".to_string()),
+            ("custom:tenant_id", firm.0.to_string()),
+        ];
+        let mut create = self.cognito.admin_create_user().user_pool_id(&self.pool_id).username(&email).message_action(cognito::types::MessageActionType::Suppress);
+        for (name, value) in attributes {
+            create = create.user_attributes(
+                cognito::types::AttributeType::builder().name(name).value(value).build().map_err(|error| Error::SignIn(error.to_string()))?,
+            );
+        }
+        create.send().await.map_err(|error| failed("could not make the firm's account", cognito::error::DisplayErrorContext(&error)))?;
+
+        let rest = async {
+            self.cognito
+                .admin_add_user_to_group()
+                .user_pool_id(&self.pool_id)
+                .username(&email)
+                .group_name(crate::auth::ADMIN_GROUP)
+                .send()
+                .await
+                .map_err(|error| failed("could not make the account its firm's administrator", cognito::error::DisplayErrorContext(&error)))?;
+            let identity = |name: &str, value: &str, attribute: Option<&str>| {
+                let mut b = cognito::types::ProviderUserIdentifierType::builder().provider_name(name).provider_attribute_value(value);
+                if let Some(attribute) = attribute {
+                    b = b.provider_attribute_name(attribute);
+                }
+                b.build()
+            };
+            self.cognito
+                .admin_link_provider_for_user()
+                .user_pool_id(&self.pool_id)
+                .destination_user(identity("Cognito", &email, None))
+                .source_user(identity(&provider, &subject, Some("Cognito_Subject")))
+                .send()
+                .await
+                .map_err(|error| failed("could not link the sign-in to the firm's account", cognito::error::DisplayErrorContext(&error)))?;
+            Ok::<(), Error>(())
+        }
+        .await;
+        if let Err(error) = rest {
+            // Do not leave a half-made account that would block the address.
+            let _ = self.cognito.admin_delete_user().user_pool_id(&self.pool_id).username(&email).send().await;
+            return Err(error);
         }
         Ok(())
     }

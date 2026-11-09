@@ -48,8 +48,8 @@ resource "aws_iam_user_policy" "services_sign_in_lookup" {
 # with its own access key removes that, and is the next step once there are paying customers.
 data "aws_iam_policy_document" "services_start_firm" {
   statement {
-    sid       = "AttachANewPersonToTheirFirm"
-    actions   = ["cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminAddUserToGroup"]
+    sid       = "GiveANewPersonTheirFirmAccount"
+    actions   = ["cognito-idp:AdminCreateUser", "cognito-idp:AdminDeleteUser", "cognito-idp:AdminLinkProviderForUser", "cognito-idp:AdminAddUserToGroup"]
     resources = [aws_cognito_user_pool.main.arn]
   }
 
