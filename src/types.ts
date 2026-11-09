@@ -10,6 +10,7 @@ export type SignInChoice =
   | { kind: "any" }
   | { kind: "google" }
   | { kind: "password" }
+  | { kind: "microsoft_personal" }
   | { kind: "microsoft"; email: string };
 
 export interface CloudStatus {

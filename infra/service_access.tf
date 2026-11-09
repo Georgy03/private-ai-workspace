@@ -39,3 +39,62 @@ resource "aws_iam_user_policy" "services_sign_in_lookup" {
   user   = aws_iam_user.services.name
   policy = data.aws_iam_policy_document.services_sign_in_lookup.json
 }
+
+# Open sign-up: a person with no firm may start their own from the app. This is the one place the API gets the
+# power to make things, so it is a switch (`self_serve_firms`), off until you want it, and as narrow as AWS
+# allows: only keys tagged for this app, only the key's own alias, and no right to delete or use any key.
+# It CAN attach a person to a firm in the user pool, which is the cost of doing this inside the API: if the API
+# were taken over, it could be used to put someone into a firm. Moving this into a small service of its own
+# with its own access key removes that, and is the next step once there are paying customers.
+data "aws_iam_policy_document" "services_start_firm" {
+  statement {
+    sid       = "AttachANewPersonToTheirFirm"
+    actions   = ["cognito-idp:AdminUpdateUserAttributes", "cognito-idp:AdminAddUserToGroup"]
+    resources = [aws_cognito_user_pool.main.arn]
+  }
+
+  statement {
+    sid       = "CreateOnlyOurKeys"
+    actions   = ["kms:CreateKey", "kms:TagResource"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/app"
+      values   = [local.app_tag]
+    }
+    condition {
+      test     = "Null"
+      variable = "aws:RequestTag/tenant"
+      values   = ["false"]
+    }
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "aws:TagKeys"
+      values   = ["app", "tenant", "firm"]
+    }
+  }
+
+  statement {
+    sid       = "SetUpANewFirmKey"
+    actions   = ["kms:DescribeKey", "kms:EnableKeyRotation", "kms:CreateAlias"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/app"
+      values   = [local.app_tag]
+    }
+  }
+
+  statement {
+    sid       = "NameANewFirmKey"
+    actions   = ["kms:CreateAlias"]
+    resources = ["arn:${local.partition}:kms:${var.region}:${local.account_id}:alias/prism-tenant-*"]
+  }
+}
+
+resource "aws_iam_user_policy" "services_start_firm" {
+  count  = var.self_serve_firms ? 1 : 0
+  name   = "start-a-firm"
+  user   = aws_iam_user.services.name
+  policy = data.aws_iam_policy_document.services_start_firm.json
+}

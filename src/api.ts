@@ -198,6 +198,13 @@ export async function cloudSignIn(choice: SignInChoice = { kind: "any" }): Promi
   return browserCloudStatus();
 }
 
+/** Starts a new firm for a person with none: Google sign-in, then the firm, with them as its administrator. */
+export async function cloudCreateFirm(name: string, withProvider: "google" | "microsoft_personal" = "google"): Promise<CloudStatus> {
+  if (isTauri()) return invoke("cloud_create_firm", { name, with: { kind: withProvider } });
+  browserCloud = { ...browserCloud, signed_in: true };
+  return browserCloudStatus();
+}
+
 export async function cloudSignOut(): Promise<CloudStatus> {
   if (isTauri()) return invoke("cloud_sign_out");
   browserCloud = { ...browserCloud, signed_in: false };

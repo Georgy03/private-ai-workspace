@@ -49,6 +49,7 @@ import {
   clearLocalData,
   cloudSetUsageLimit,
   cloudSignIn,
+  cloudCreateFirm,
   cloudSignOut,
   cloudStatus,
   cloudUsage,
@@ -751,7 +752,7 @@ function SettingsDialog({ cloud, theme, onTheme, usage, onUsage, onCloud, onClos
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignIn={async (choice) => onCloud(await cloudSignIn(choice))} />}
+      {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignIn={async (choice) => onCloud(await cloudSignIn(choice))} onCreateFirm={async (name, withProvider) => onCloud(await cloudCreateFirm(name, withProvider))} />}
       <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
         <header><div><span className="modal-icon"><Settings size={19} /></span><div><strong>Workspace settings</strong><span>Local search and AI answers</span></div></div><button onClick={onClose}><X size={19} /></button></header>
         <section className="provider-fields cloud-settings"><label id="appearance-label">Appearance</label>

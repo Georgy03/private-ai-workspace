@@ -34,6 +34,14 @@ pub struct SignInWorld {
     pub fail: HashSet<String>,
     /// Invited people: username to firm ID.
     pub users: BTreeMap<String, String>,
+    /// Group memberships: username to groups.
+    pub groups: BTreeMap<String, Vec<String>>,
+    /// Status and creation time (seconds since 1970) of users; anyone missing is a new outside-provider account.
+    pub meta: BTreeMap<String, (String, i64)>,
+    /// Users per page of a listing (0 means as many as asked for).
+    pub page_size: usize,
+    /// After the next listing, attach this user to this firm (a person finishing sign-up at that moment).
+    pub attach_after_list: Option<(String, String)>,
 }
 
 pub type SignIn = Arc<Mutex<SignInWorld>>;
@@ -83,10 +91,67 @@ async fn handle(State(world): State<SignIn>, headers: HeaderMap, body: Bytes) ->
         "AdminGetUser" => {
             let name = request["Username"].as_str().unwrap_or_default();
             match w.users.get(name) {
-                Some(firm) => ok(json!({ "Username": name, "Enabled": true, "UserStatus": "CONFIRMED",
-                    "UserAttributes": [{ "Name": "email", "Value": name }, { "Name": "custom:tenant_id", "Value": firm }] })),
+                Some(firm) => {
+                    // An empty firm is a person who has signed in but belongs to none yet.
+                    let mut attributes = vec![json!({ "Name": "email", "Value": name })];
+                    if !firm.is_empty() {
+                        attributes.push(json!({ "Name": "custom:tenant_id", "Value": firm }));
+                    }
+                    ok(json!({ "Username": name, "Enabled": true, "UserStatus": "CONFIRMED", "UserAttributes": attributes }))
+                }
                 None => error("UserNotFoundException", "User does not exist."),
             }
+        }
+        "ListUsers" => {
+            let names: Vec<String> = w.users.keys().cloned().collect();
+            let start = request["PaginationToken"].as_str().and_then(|t| t.parse::<usize>().ok()).unwrap_or(0);
+            let asked = request["Limit"].as_u64().unwrap_or(60) as usize;
+            let size = if w.page_size > 0 { w.page_size.min(asked) } else { asked };
+            let now = 1_900_000_000_i64;
+            let page: Vec<Value> = names
+                .iter()
+                .skip(start)
+                .take(size)
+                .map(|name| {
+                    let firm = &w.users[name];
+                    let (status, created) = w.meta.get(name).cloned().unwrap_or(("EXTERNAL_PROVIDER".into(), now));
+                    let mut attributes = vec![json!({ "Name": "email", "Value": format!("{name}@example.com") })];
+                    if !firm.is_empty() {
+                        attributes.push(json!({ "Name": "custom:tenant_id", "Value": firm }));
+                    }
+                    json!({ "Username": name, "UserStatus": status, "UserCreateDate": created as f64, "Attributes": attributes, "Enabled": true })
+                })
+                .collect();
+            let mut reply = json!({ "Users": page });
+            if start + size < names.len() {
+                reply["PaginationToken"] = json!((start + size).to_string());
+            }
+            if let Some((user, firm)) = w.attach_after_list.take() {
+                w.users.insert(user, firm);
+            }
+            ok(reply)
+        }
+        "AdminDeleteUser" => match w.users.remove(request["Username"].as_str().unwrap_or_default()) {
+            Some(_) => ok(json!({})),
+            None => error("UserNotFoundException", "User does not exist."),
+        },
+        "AdminUpdateUserAttributes" => {
+            let name = request["Username"].as_str().unwrap_or_default().to_string();
+            if !w.users.contains_key(&name) {
+                return error("UserNotFoundException", "User does not exist.");
+            }
+            for attribute in request["UserAttributes"].as_array().into_iter().flatten() {
+                if attribute["Name"] == "custom:tenant_id" {
+                    w.users.insert(name.clone(), attribute["Value"].as_str().unwrap_or_default().to_string());
+                }
+            }
+            ok(json!({}))
+        }
+        "AdminAddUserToGroup" => {
+            let name = request["Username"].as_str().unwrap_or_default().to_string();
+            let group = request["GroupName"].as_str().unwrap_or_default().to_string();
+            w.groups.entry(name).or_default().push(group);
+            ok(json!({}))
         }
         "DescribeUserPoolClient" => ok(json!({ "UserPoolClient": w.client })),
         "UpdateUserPoolClient" => {

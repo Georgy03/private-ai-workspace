@@ -57,8 +57,40 @@ struct Claims {
     #[serde(rename = "cognito:groups", default)]
     groups: Vec<String>,
     token_use: Option<String>,
+    #[serde(rename = "cognito:username")]
+    username: Option<String>,
     email: Option<String>,
     email_verified: Option<serde_json::Value>,
+}
+
+/// Lower-case, and only when the identity provider verified it. Cognito reports email_verified as a boolean,
+/// federated providers sometimes as a string.
+fn verified_email(claims: &Claims) -> Option<String> {
+    let verified = match &claims.email_verified {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(serde_json::Value::String(value)) => value == "true",
+        _ => false,
+    };
+    claims
+        .email
+        .clone()
+        .filter(|_| verified)
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| email.contains('@'))
+}
+
+/// Someone signed in who belongs to no firm yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPerson {
+    /// Their name in the user pool, which is what administrators' calls address.
+    pub username: String,
+    pub email: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unassigned {
+    New(NewPerson),
+    AlreadyInFirm,
 }
 
 /// Verifies sign-in tokens against the identity provider's published signing keys.
@@ -119,7 +151,8 @@ impl TokenVerifier {
         jsonwebtoken::decode_header(token).ok()?.kid
     }
 
-    pub fn verify(&self, token: &str) -> Result<Principal> {
+    /// The signed, unexpired ID token's claims, or why it is refused.
+    fn decode_id(&self, token: &str) -> Result<Claims> {
         let header =
             jsonwebtoken::decode_header(token).map_err(|error| Error::Token(error.to_string()))?;
         let claims = {
@@ -136,6 +169,33 @@ impl TokenVerifier {
         if claims.token_use.as_deref() != Some("id") {
             return Err(Error::Token("not an ID token".into()));
         }
+        Ok(claims)
+    }
+
+    /// For the one request a person with no firm yet may make: starting their own. The token must be a
+    /// valid ID token whose email the identity provider verified. A token that already carries a firm is
+    /// reported as such, so the caller can say so instead of making a second firm.
+    pub fn verify_unassigned(&self, token: &str) -> Result<Unassigned> {
+        let claims = self.decode_id(token)?;
+        if claims
+            .tenant_id
+            .as_deref()
+            .is_some_and(|value| Uuid::parse_str(value).is_ok())
+        {
+            return Ok(Unassigned::AlreadyInFirm);
+        }
+        let username = claims
+            .username
+            .clone()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| Error::Token("token carries no user name".into()))?;
+        let email = verified_email(&claims)
+            .ok_or_else(|| Error::Token("the email address is not verified".into()))?;
+        Ok(Unassigned::New(NewPerson { username, email }))
+    }
+
+    pub fn verify(&self, token: &str) -> Result<Principal> {
+        let claims = self.decode_id(token)?;
         let tenant = claims
             .tenant_id
             .as_deref()
@@ -144,17 +204,7 @@ impl TokenVerifier {
         if claims.sub.is_empty() {
             return Err(Error::Token("token carries no user".into()));
         }
-        // Cognito reports email_verified as a boolean, federated providers sometimes as a string.
-        let verified = match &claims.email_verified {
-            Some(serde_json::Value::Bool(value)) => *value,
-            Some(serde_json::Value::String(value)) => value == "true",
-            _ => false,
-        };
-        let email = claims
-            .email
-            .filter(|_| verified)
-            .map(|email| email.trim().to_lowercase())
-            .filter(|email| email.contains('@'));
+        let email = verified_email(&claims);
         Ok(Principal {
             tenant: TenantId(tenant),
             user: claims.sub,

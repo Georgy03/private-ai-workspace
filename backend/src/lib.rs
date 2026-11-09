@@ -31,6 +31,8 @@ pub mod schedules;
 pub mod schedules_api;
 pub mod secrets;
 pub mod server;
+pub mod onboarding;
+pub mod prune;
 pub mod signin;
 pub mod signin_api;
 pub mod sync;

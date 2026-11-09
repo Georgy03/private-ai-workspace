@@ -4,6 +4,10 @@
 #   ./firm.sh provision "Acme Law LLP" [--microsoft-tenant <their Microsoft tenant id>]
 #   ./firm.sh add-microsoft <firm id> <their Microsoft tenant id> [--domain acme.com]...
 #   ./firm.sh remove-microsoft <firm id>
+#   ./firm.sh add-microsoft-personal   (once: sign-in for @outlook.com and other personal Microsoft accounts)
+#   ./firm.sh remove-microsoft-personal
+#   ./firm.sh prune-newcomers [--days 30] [--delete]   (lists abandoned sign-ups; deletes only with --delete)
+#   ./firm.sh enable-google           (once, after OpenTofu has made the Google provider)
 #
 # Adding a firm needs no Terraform change: Microsoft sign-in for the firm is made through AWS when you run this.
 # It reads backend/.env.neon (database logins) and backend/.env.signin (git-ignored; the one Microsoft sign-in app:
@@ -21,9 +25,9 @@ set +a
 export DATABASE_URL="postgresql://prism_prov:$NEON_PROV_PASSWORD@$NEON_POOLED_HOST/$NEON_DB?sslmode=require"
 export DATABASE_CA_FILE="${DATABASE_CA_FILE:-/etc/ssl/cert.pem}"
 case "${1:-}" in
-  provision | add-microsoft | remove-microsoft)
+  provision | add-microsoft | remove-microsoft | enable-google | add-microsoft-personal | remove-microsoft-personal | prune-newcomers)
     cmd="$1"; shift
     [ "$cmd" = provision ] && cmd=provision-firm
     exec cargo run -q --bin workspace-cloud -- "$cmd" "$@" ;;
-  *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

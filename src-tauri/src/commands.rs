@@ -1119,6 +1119,25 @@ pub async fn cloud_sign_in(
     Ok(state.cloud.status())
 }
 
+/// Starts a new firm for a person with none: Google sign-in, then the firm, then a fresh token that carries it.
+#[tauri::command]
+pub async fn cloud_create_firm(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    with: Option<crate::cloud::SignInChoice>,
+) -> AppResult<CloudStatus> {
+    state
+        .cloud
+        .create_firm(
+            &name,
+            &with.unwrap_or(crate::cloud::SignInChoice::Google),
+            crate::cloud::open_browser,
+        )
+        .await
+        .map_err(|error| AppError::Cloud(error.message()))?;
+    Ok(state.cloud.status())
+}
+
 #[tauri::command]
 pub async fn cloud_connectors(
     state: State<'_, Arc<AppState>>,

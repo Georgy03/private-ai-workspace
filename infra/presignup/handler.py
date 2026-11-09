@@ -26,6 +26,17 @@ _EMAIL = re.compile(r'^[^@\s"\\]{1,64}@[^@\s"\\]{1,255}\.[^@\s"\\]{2,63}$')
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 # The names `workspace-cloud` gives Microsoft providers: "ms-", then letters, digits and hyphens.
 _PROVIDER = re.compile(r"^ms-[a-z0-9-]{1,29}$")
+# One provider serves every personal Microsoft account (workspace-cloud `add-microsoft-personal`).
+PERSONAL_PROVIDER = "MicrosoftPersonal"
+# Microsoft does not say whether a personal account's email is verified. For the addresses Microsoft itself issues,
+# the address IS the account, so only those are accepted; any other address used to sign in to a personal Microsoft
+# account (say, a company address) is refused here and should use Google or its firm's own sign-in.
+PERSONAL_DOMAINS = frozenset({
+    "outlook.com", "hotmail.com", "live.com", "msn.com", "outlook.co.uk", "hotmail.co.uk", "live.co.uk",
+    "outlook.ca", "hotmail.ca", "live.ca", "outlook.com.au", "hotmail.com.au", "live.com.au",
+    "outlook.de", "hotmail.de", "live.de", "outlook.fr", "hotmail.fr", "live.fr",
+    "outlook.it", "hotmail.it", "live.it", "outlook.es", "hotmail.es", "outlook.in", "outlook.ie", "live.ie",
+})
 PARAMETER_PATH = os.environ.get("FIRM_PARAMETER_PATH", "/prism/signin/microsoft/")
 
 
@@ -77,6 +88,9 @@ def handler(event, context=None, client=None, ssm=None):
     if provider == "Google":
         if str(attributes.get("email_verified", "")).lower() != "true":
             raise _deny()
+    elif provider == PERSONAL_PROVIDER:
+        if email.rsplit("@", 1)[-1] not in PERSONAL_DOMAINS:
+            raise _deny()
     else:
         firm = _firm_of(provider, ssm)
         if firm is None or not _UUID.match(firm):
@@ -84,6 +98,13 @@ def handler(event, context=None, client=None, ssm=None):
 
     pool = event["userPoolId"]
     found = client.list_users(UserPoolId=pool, Filter=f'email = "{email}"', Limit=10).get("Users", [])
+    if not found and (provider == "Google" or provider == PERSONAL_PROVIDER):
+        # Nobody has this address, and Google has verified it: a newcomer who will start their own firm. They get
+        # an account with no firm, which can do exactly one thing: ask the server to make them one (and become its
+        # administrator). A firm's own Microsoft providers are not offered this, because they belong to firms.
+        event["response"]["autoConfirmUser"] = True
+        event["response"]["autoVerifyEmail"] = True
+        return event
     invited = [user for user in found if user.get("UserStatus") != "EXTERNAL_PROVIDER"]
     if len(invited) != 1:
         raise _deny()
@@ -94,11 +115,17 @@ def handler(event, context=None, client=None, ssm=None):
     if firm is not None and tenant.lower() != str(firm).lower():
         raise _deny()
 
-    client.admin_link_provider_for_user(
-        UserPoolId=pool,
-        DestinationUser={"ProviderName": "Cognito", "ProviderAttributeValue": user["Username"]},
-        SourceUser={"ProviderName": provider, "ProviderAttributeName": "Cognito_Subject", "ProviderAttributeValue": subject},
-    )
+    try:
+        client.admin_link_provider_for_user(
+            UserPoolId=pool,
+            DestinationUser={"ProviderName": "Cognito", "ProviderAttributeValue": user["Username"]},
+            SourceUser={"ProviderName": provider, "ProviderAttributeName": "Cognito_Subject", "ProviderAttributeValue": subject},
+        )
+    except Exception as error:  # noqa: BLE001 - only the one harmless case is let through, below
+        # Cognito runs this function again on later sign-ins by a person who is already linked. That is
+        # not a failure: the person is invited and linked, so let them through. Anything else still fails.
+        if "already linked" not in str(error):
+            raise
     # The invitation already confirmed the address; do not leave a second, unconfirmed account.
     event["response"]["autoConfirmUser"] = True
     event["response"]["autoVerifyEmail"] = True

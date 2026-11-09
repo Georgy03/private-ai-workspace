@@ -247,3 +247,6 @@ nav button.active svg { color: var(--accent); }
 .signin-link { justify-self: center; border: 0; background: none; color: var(--muted); font-size: 12px; text-decoration: underline; cursor: pointer; }
 .signin-link:disabled { cursor: default; opacity: .5; }
 .signin-waiting { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }
+.signin-mode { justify-self: stretch; }
+.signin-mode button { flex: 1; }
+.signin-body input[type="text"] { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 0 11px; font-size: 13px; background: transparent; color: var(--ink); }

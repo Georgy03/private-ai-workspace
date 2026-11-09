@@ -1124,13 +1124,71 @@ impl Cloud {
         Ok(id_token)
     }
 
+    /// Starts a new firm for a person who has none: signs them in with Google (the account becomes theirs), asks the
+    /// server to make the firm with them as its administrator, and refreshes so their token carries the firm.
+    pub async fn create_firm(
+        &self,
+        name: &str,
+        with: &SignInChoice,
+        open: impl FnOnce(&str),
+    ) -> Result<(), CloudError> {
+        // Only the two sign-ins that need no invitation can start a firm.
+        if !matches!(with, SignInChoice::Google | SignInChoice::MicrosoftPersonal) {
+            return Err(CloudError::Unavailable(
+                "a firm can be started with Google or a personal Microsoft account".into(),
+            ));
+        }
+        let name = clean_firm_name(name)?;
+        self.sign_in(with, open).await?;
+        self.finish_new_firm(&name).await
+    }
+
+    /// The part after sign-in, apart so it can be tried without a browser.
+    async fn finish_new_firm(&self, name: &str) -> Result<(), CloudError> {
+        let settings = self.settings();
+        let mut sent = false;
+        let raw = self
+            .authed(
+                reqwest::Method::POST,
+                "/v1/onboarding/firm",
+                Some(&serde_json::json!({ "name": name })),
+                MANAGE_TIMEOUT,
+                false,
+                &mut sent,
+            )
+            .await;
+        let failure = match raw {
+            Ok(raw) if raw.status == 200 => {
+                // The token held no firm; a fresh one does.
+                return self.refresh(&settings).await.map(|_| ());
+            }
+            // Already in a firm: the sign-in is good, so the person stays signed in.
+            Ok(raw) if raw.status == 409 => {
+                return Err(CloudError::Unavailable(
+                    "this Google account already belongs to a firm, or its firm is being made. Use Sign in instead".into(),
+                ));
+            }
+            Ok(raw) if raw.status == 429 => CloudError::Unavailable(
+                "too many firms are being started just now; wait a minute and try again".into(),
+            ),
+            Ok(raw) if raw.status == 404 => CloudError::Unavailable(
+                "starting a firm from the app is not switched on for this server".into(),
+            ),
+            Ok(_) => CloudError::Unavailable("your firm could not be made; try again".into()),
+            Err(error) => error,
+        };
+        // A sign-in with no firm can do nothing else, so do not leave the person half signed in.
+        self.sign_out();
+        Err(failure)
+    }
+
     /// Asks the firm's server which Microsoft sign-in belongs to this email. No one is signed in yet, so the
     /// question carries nothing but the email; the answer is only a provider name, checked before it is used.
     async fn microsoft_provider(
         &self,
         settings: &Settings,
         email: &str,
-    ) -> Result<String, CloudError> {
+    ) -> Result<Option<String>, CloudError> {
         let base = settings
             .api_base
             .as_deref()
@@ -1163,13 +1221,11 @@ impl Cloud {
             .await
             .map_err(|_| CloudError::Unavailable("the sign-in lookup was not understood".into()))?;
         match reply["provider"].as_str() {
-            Some(name) if valid_microsoft_provider(name) => Ok(name.to_string()),
+            Some(name) if valid_microsoft_provider(name) => Ok(Some(name.to_string())),
             Some(_) => Err(CloudError::Unavailable(
                 "the sign-in lookup returned something unexpected".into(),
             )),
-            None => Err(CloudError::Unavailable(
-                "no Microsoft sign-in was found for that email. Ask your administrator to invite you, or choose another way to sign in".into(),
-            )),
+            None => Ok(None),
         }
     }
 
@@ -1189,7 +1245,18 @@ impl Cloud {
             .ok_or(CloudError::NotConfigured)?;
         let base = self.cognito_base(&settings)?;
         if let SignInChoice::Microsoft { email } = choice {
-            let provider = self.microsoft_provider(&settings, &clean_email(email)?).await?;
+            let email = clean_email(email)?;
+            // A firm's own Microsoft sign-in wins. Failing that, an address Microsoft issues itself (outlook.com
+            // and the like) is a personal account, which has one shared sign-in.
+            let provider = match self.microsoft_provider(&settings, &email).await? {
+                Some(provider) => provider,
+                None if is_personal_microsoft_address(&email) => PERSONAL_MICROSOFT.to_string(),
+                None => {
+                    return Err(CloudError::Unavailable(
+                        "no Microsoft sign-in was found for that email. Ask your administrator to invite you, or choose another way to sign in".into(),
+                    ));
+                }
+            };
             routing = Some(("identity_provider", provider));
         }
 
@@ -1263,6 +1330,8 @@ pub enum SignInChoice {
     Google,
     /// The person's work email: the server finds the invitation and so the firm's own Microsoft sign-in.
     Microsoft { email: String },
+    /// A personal Microsoft account (`@outlook.com`, `@hotmail.com`): one shared sign-in, no firm needed first.
+    MicrosoftPersonal,
     /// An email address and password (with an authenticator app).
     Password,
 }
@@ -1273,9 +1342,39 @@ impl SignInChoice {
         match self {
             Self::Google => Some(("identity_provider", "Google".into())),
             Self::Password => Some(("identity_provider", "COGNITO".into())),
+            Self::MicrosoftPersonal => Some(("identity_provider", PERSONAL_MICROSOFT.into())),
             Self::Any | Self::Microsoft { .. } => None,
         }
     }
+}
+
+/// The sign-in provider for personal Microsoft accounts (made by `workspace-cloud add-microsoft-personal`).
+const PERSONAL_MICROSOFT: &str = "MicrosoftPersonal";
+
+/// The addresses Microsoft itself issues for personal accounts. Kept the same as the sign-up function's list
+/// (infra/presignup/handler.py), which refuses any other address on this provider.
+const PERSONAL_MICROSOFT_DOMAINS: &[&str] = &[
+    "outlook.com", "hotmail.com", "live.com", "msn.com", "outlook.co.uk", "hotmail.co.uk", "live.co.uk",
+    "outlook.ca", "hotmail.ca", "live.ca", "outlook.com.au", "hotmail.com.au", "live.com.au",
+    "outlook.de", "hotmail.de", "live.de", "outlook.fr", "hotmail.fr", "live.fr",
+    "outlook.it", "hotmail.it", "live.it", "outlook.es", "hotmail.es", "outlook.in", "outlook.ie", "live.ie",
+];
+
+fn is_personal_microsoft_address(email: &str) -> bool {
+    email
+        .rsplit_once('@')
+        .is_some_and(|(_, domain)| PERSONAL_MICROSOFT_DOMAINS.contains(&domain))
+}
+
+/// A firm name tidied to single spaces, or a plain-language reason it cannot be used.
+fn clean_firm_name(text: &str) -> Result<String, CloudError> {
+    let name = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+        return Err(CloudError::Unavailable(
+            "give your firm a name of 1 to 120 characters".into(),
+        ));
+    }
+    Ok(name)
 }
 
 /// An email address, lowercased, or a plain-language reason it cannot be used.
@@ -1305,6 +1404,14 @@ fn valid_microsoft_provider(name: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     })
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Waits for the browser to arrive with the right state. Anything else (a favicon request, a
@@ -1337,13 +1444,27 @@ async fn wait_for_callback(listener: &TcpListener, state: &str) -> Result<String
         };
         let valid = parsed.as_ref().is_some_and(|url| url.path() == "/callback")
             && pair("state").as_deref() == Some(state);
-        let (status, text) = if valid && pair("code").is_some() {
+        // Cognito sends the person back with `error_description` when sign-in is refused (for example, an email
+        // nobody invited). Show that reason, in the browser and in the app, instead of a vague "not valid".
+        let refusal = (valid && pair("code").is_none())
+            .then(|| pair("error_description").or_else(|| pair("error")))
+            .flatten()
+            .map(|reason| reason.chars().filter(|c| !c.is_control()).take(200).collect::<String>());
+        let (status, text) = if let Some(reason) = &refusal {
+            (
+                "400 Bad Request",
+                format!("Sign-in was not completed: {}", html_escape(reason)),
+            )
+        } else if valid && pair("code").is_some() {
             (
                 "200 OK",
-                "Signed in. You can close this window and return to the app.",
+                "Signed in. You can close this window and return to the app.".to_string(),
             )
         } else {
-            ("400 Bad Request", "This sign-in link is not valid.")
+            (
+                "400 Bad Request",
+                "This sign-in link is not valid.".to_string(),
+            )
         };
         let body = format!("<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;max-width:32rem;margin:4rem auto\"><p>{text}</p>");
         let reply = format!(
@@ -1352,6 +1473,11 @@ async fn wait_for_callback(listener: &TcpListener, state: &str) -> Result<String
         );
         let _ = socket.write_all(reply.as_bytes()).await;
         let _ = socket.shutdown().await;
+        if let Some(reason) = refusal {
+            return Err(CloudError::Unavailable(format!(
+                "sign-in was refused: {reason}"
+            )));
+        }
         if valid {
             if let Some(code) = pair("code") {
                 return Ok(code);
@@ -2426,5 +2552,124 @@ mod tests {
         let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://idp.example.com"));
         let password = address_for(cloud, SignInChoice::Password).await.unwrap();
         assert_eq!(pair(&password, "identity_provider").as_deref(), Some("COGNITO"));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_the_sign_in_service_is_shown_and_reported_not_hidden() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let waiting = tokio::spawn(async move { wait_for_callback(&listener, "st").await });
+        let page = reqwest::get(format!(
+            "http://127.0.0.1:{port}/callback?state=st&error=access_denied&error_description=PreSignUp%20failed%3A%20%3Cb%3Eno%3C%2Fb%3E"
+        ))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+        assert!(page.contains("Sign-in was not completed: PreSignUp failed: &lt;b&gt;no&lt;/b&gt;"), "{page}");
+        let error = waiting.await.unwrap().unwrap_err();
+        assert!(error.message().contains("PreSignUp failed"), "{}", error.message());
+    }
+
+    #[test]
+    fn firm_names_are_tidied_and_bad_ones_refused() {
+        assert_eq!(clean_firm_name("  Sam's   Tax \n Practice ").unwrap(), "Sam's Tax Practice");
+        for bad in ["", "   ", &"a".repeat(121), "bad\u{7}name"] {
+            assert!(clean_firm_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn starting_a_firm_posts_the_name_then_refreshes_so_the_token_carries_the_firm() {
+        let (server, seen) = serve(|request| match request.path.as_str() {
+            "/v1/onboarding/firm" => {
+                assert!(request.auth.as_deref().is_some_and(|a| a.contains("no-firm-token")));
+                assert_eq!(request.body, r#"{"name":"Sam's Tax Practice"}"#);
+                (200, r#"{"firm_id":"x"}"#.into(), 0)
+            }
+            "/oauth2/token" => (
+                200,
+                r#"{"id_token":"token-with-firm","expires_in":3600}"#.into(),
+                0,
+            ),
+            other => panic!("unexpected request {other}"),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = cloud_for(dir.path(), &server, Some(&server));
+        sign_in_tokens(&cloud, "no-firm-token", Some("refresh-1"), 3600);
+        cloud.finish_new_firm("Sam's Tax Practice").await.unwrap();
+        assert_eq!(cloud.tokens.lock().unwrap().as_ref().unwrap().id_token, "token-with-firm");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refused_firm_says_why_and_only_the_already_in_a_firm_case_keeps_the_person_signed_in() {
+        for (status, words, stays_signed_in) in [
+            (409, "already belongs to a firm", true),
+            (429, "wait a minute", false),
+            (404, "not switched on", false),
+            (503, "try again", false),
+        ] {
+            let (server, _) = serve(move |_| (status, "x".into(), 0)).await;
+            let dir = tempfile::tempdir().unwrap();
+            let cloud = cloud_for(dir.path(), &server, Some(&server));
+            sign_in_tokens(&cloud, "no-firm-token", Some("refresh-1"), 3600);
+            let message = cloud.finish_new_firm("Sam").await.unwrap_err().message();
+            assert!(message.contains(words), "{status}: {message}");
+            assert_eq!(cloud.tokens.lock().unwrap().is_some(), stays_signed_in, "{status}");
+        }
+    }
+
+    #[test]
+    fn only_addresses_microsoft_issues_count_as_personal_microsoft() {
+        for yes in ["sam@outlook.com", "x@hotmail.co.uk", "x@live.fr"] {
+            assert!(is_personal_microsoft_address(yes), "{yes}");
+        }
+        for no in ["boss@company.com", "x@live.attacker.com", "x@outlook.com.evil.io", "x@gmail.com", "outlook.com"] {
+            assert!(!is_personal_microsoft_address(no), "{no}");
+        }
+        assert_eq!(
+            SignInChoice::MicrosoftPersonal.fixed_routing(),
+            Some(("identity_provider", "MicrosoftPersonal".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_personal_microsoft_address_uses_the_shared_sign_in_unless_a_firm_has_its_own() {
+        let (server, _) = serve(|request| {
+            let body = if request.body.contains("invited@outlook.com") {
+                r#"{"provider":"ms-acme-b72431"}"#
+            } else {
+                r#"{"provider":null}"#
+            };
+            (200, body.into(), 0)
+        })
+        .await;
+        let ask = |email: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let cloud = cloud_for(dir.path(), &server, Some("https://idp.example.com"));
+            let choice = SignInChoice::Microsoft { email: email.into() };
+            async move {
+                let _keep = dir;
+                address_for(cloud, choice).await
+            }
+        };
+        let personal = ask("new@outlook.com").await.unwrap();
+        assert_eq!(pair(&personal, "identity_provider").as_deref(), Some("MicrosoftPersonal"));
+        let firms = ask("invited@outlook.com").await.unwrap();
+        assert_eq!(pair(&firms, "identity_provider").as_deref(), Some("ms-acme-b72431"));
+        assert!(ask("someone@company.com").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn only_google_or_personal_microsoft_can_start_a_firm() {
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://idp.example.com"));
+        for with in [SignInChoice::Any, SignInChoice::Password, SignInChoice::Microsoft { email: "a@b.com".into() }] {
+            let error = cloud.create_firm("Sam", &with, |_| panic!("the browser must not open")).await.unwrap_err();
+            assert!(error.message().contains("Google or a personal Microsoft"), "{with:?}");
+        }
     }
 }

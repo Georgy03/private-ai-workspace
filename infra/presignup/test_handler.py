@@ -28,6 +28,7 @@ class FakeSsm:
 class FakeCognito:
     def __init__(self, users):
         self.users, self.filters, self.links = users, [], []
+        self.link_error = None
 
     def list_users(self, UserPoolId, Filter, Limit):
         self.filters.append(Filter)
@@ -35,6 +36,8 @@ class FakeCognito:
 
     def admin_link_provider_for_user(self, **arguments):
         self.links.append(arguments)
+        if self.link_error:
+            raise Exception(self.link_error)
 
 
 def invited(tenant=FIRM_A, status="FORCE_CHANGE_PASSWORD", username="native-uuid"):
@@ -78,9 +81,15 @@ class PreSignUp(unittest.TestCase):
             self.refused(event(verified=verified), cognito)
         self.assertEqual(cognito.filters, [])
 
-    def test_someone_who_was_not_invited_is_refused_and_told_to_ask_their_administrator(self):
+    def test_a_newcomer_with_a_verified_google_address_gets_an_account_with_no_firm_and_nothing_is_linked(self):
         cognito = FakeCognito([])
-        self.assertIn("not been invited", self.refused(event(), cognito))
+        result = handler.handler(event(), None, cognito, self.ssm)
+        self.assertTrue(result["response"]["autoConfirmUser"] and result["response"]["autoVerifyEmail"])
+        self.assertEqual(cognito.links, [])
+
+    def test_someone_not_invited_through_microsoft_is_refused_and_told_to_ask_their_administrator(self):
+        cognito = FakeCognito([])
+        self.assertIn("not been invited", self.refused(event(provider="ms-acme"), cognito))
 
     def test_a_person_already_signed_in_through_a_provider_is_not_an_invitation(self):
         cognito = FakeCognito([invited(status="EXTERNAL_PROVIDER")])
@@ -133,6 +142,36 @@ class PreSignUp(unittest.TestCase):
             outgoing = event(source=source)
             self.assertIs(handler.handler(outgoing, None, cognito, self.ssm), outgoing)
         self.assertEqual((cognito.filters, cognito.links), ([], []))
+
+
+    def test_a_person_who_is_already_linked_is_let_through_but_other_link_failures_still_refuse(self):
+        client = FakeCognito([invited()])
+        client.link_error = "An error occurred (InvalidParameterException) when calling the AdminLinkProviderForUser operation: SourceUser is already linked to DestinationUser"
+        result = handler.handler(event(), client=client, ssm=FakeSsm({}))
+        self.assertTrue(result["response"]["autoConfirmUser"])
+        client.link_error = "An error occurred (InternalErrorException): something else"
+        with self.assertRaises(Exception):
+            handler.handler(event(), client=client, ssm=FakeSsm({}))
+
+
+    def test_personal_microsoft_accounts_use_one_shared_provider_but_only_for_addresses_microsoft_issues(self):
+        # An invited person is linked to their invitation, like Google, without any firm record being consulted.
+        cognito = FakeCognito([invited()])
+        mine = event(provider="MicrosoftPersonal", email="Sam@Outlook.com", verified="false")
+        result = handler.handler(mine, None, cognito, FakeSsm({}))
+        self.assertEqual(cognito.links[0]["SourceUser"]["ProviderName"], "MicrosoftPersonal")
+        self.assertTrue(result["response"]["autoConfirmUser"])
+        # A newcomer with such an address gets a firm-less account, to start their own firm.
+        newcomer = FakeCognito([])
+        again = handler.handler(event(provider="MicrosoftPersonal", email="new@hotmail.co.uk", verified="false"), None, newcomer, FakeSsm({}))
+        self.assertTrue(again["response"]["autoConfirmUser"] and again["response"]["autoVerifyEmail"])
+        self.assertEqual(newcomer.links, [])
+
+    def test_personal_microsoft_refuses_any_other_address_even_a_lookalike_one(self):
+        for address in ["boss@company.com", "x@live.attacker.com", "x@outlook.com.evil.io", "x@gmail.com", "x@Outlook.com.attacker.com"]:
+            cognito = FakeCognito([invited()])
+            self.refused(event(provider="MicrosoftPersonal", email=address, verified="false"), cognito)
+            self.assertEqual(cognito.filters, [], address)
 
 
 if __name__ == "__main__":

@@ -117,8 +117,11 @@ resource "aws_cognito_identity_provider" "google" {
     authorize_scopes = "openid email profile"
   }
 
+  # Cognito only copies what is mapped. Without email_verified the pre sign-up function never sees Google's
+  # confirmation of the address and (correctly) refuses everyone.
   attribute_mapping = {
-    email    = "email"
-    username = "sub"
+    email          = "email"
+    email_verified = "email_verified"
+    username       = "sub"
   }
 }

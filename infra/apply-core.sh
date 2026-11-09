@@ -19,4 +19,5 @@ exec tofu apply \
   -target=aws_iam_role_policy.presignup \
   -target=aws_iam_user_policy.services_token_keys \
   -target=aws_iam_user_policy.services_sign_in_lookup \
+  -target=aws_iam_user_policy.services_start_firm \
   "$@"

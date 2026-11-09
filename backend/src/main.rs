@@ -120,6 +120,62 @@ async fn add_microsoft_command() -> workspace_cloud::Result<()> {
     Ok(())
 }
 
+/// `workspace-cloud prune-newcomers [--days 30] [--delete]` lists sign-ups that never made a firm and are older than
+/// `--days` (at least 1). It only lists, until `--delete` is given. It never touches an invited person, an
+/// administrator, or anyone who belongs to a firm. Run it with your own AWS sign-in.
+async fn prune_newcomers_command() -> workspace_cloud::Result<()> {
+    let usage = || workspace_cloud::Error::Config("usage: workspace-cloud prune-newcomers [--days 30] [--delete]".into());
+    let (mut days, mut delete) = (30u32, false);
+    let mut args = std::env::args().skip(2);
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--days" => days = args.next().and_then(|d| d.parse().ok()).ok_or_else(usage)?,
+            "--delete" => delete = true,
+            _ => return Err(usage()),
+        }
+    }
+    let need = |name: &str| std::env::var(name).ok().filter(|value| !value.trim().is_empty()).ok_or_else(|| workspace_cloud::Error::Config(format!("{name} is not set")));
+    let pool = workspace_cloud::signin::AwsSignIn::from_env(&need("COGNITO_ISSUER")?, &need("COGNITO_CLIENT_ID")?).await?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let report = workspace_cloud::prune::prune(&pool, days, now, delete).await?;
+    for newcomer in &report.candidates {
+        println!("{} {} (made {} days ago)", if report.deleted.contains(&newcomer.username) { "deleted" } else if report.spared.contains(&newcomer.username) { "spared " } else { "old    " }, newcomer.email, (now - newcomer.created) / 86_400);
+    }
+    println!("older_than_{days}_days={} newer={} deleted={} spared={}", report.candidates.len(), report.too_new, report.deleted.len(), report.spared.len());
+    if !delete && !report.candidates.is_empty() {
+        println!("nothing was deleted: add --delete to delete the accounts listed above");
+    }
+    Ok(())
+}
+
+/// `workspace-cloud enable-google` lets the desktop app's sign-in use the Google provider, once OpenTofu has made it.
+/// OpenTofu leaves the app's list of providers alone (each firm's Microsoft provider is added to it at runtime), so
+/// this step allows Google on the app. It changes nothing else about the app, and is safe to repeat.
+async fn enable_google_command() -> workspace_cloud::Result<()> {
+    let need = |name: &str| std::env::var(name).ok().filter(|value| !value.trim().is_empty()).ok_or_else(|| workspace_cloud::Error::Config(format!("{name} is not set")));
+    let setup = workspace_cloud::signin::AwsSignIn::from_env(&need("COGNITO_ISSUER")?, &need("COGNITO_CLIENT_ID")?).await?;
+    workspace_cloud::signin::SignInSetup::allow_on_app(&setup, "Google").await?;
+    println!("google_allowed=yes");
+    Ok(())
+}
+
+/// `workspace-cloud add-microsoft-personal` turns on sign-in with personal Microsoft accounts (`@outlook.com` and the
+/// like) for everyone, through one shared provider. It uses the same Microsoft sign-in app as the firms' providers.
+async fn add_microsoft_personal_command() -> workspace_cloud::Result<()> {
+    let (setup, app) = microsoft_sign_in().await?;
+    workspace_cloud::signin::add_personal_microsoft(&setup, &app).await?;
+    println!("microsoft_personal=on");
+    Ok(())
+}
+
+/// `workspace-cloud remove-microsoft-personal` turns personal Microsoft sign-in off again.
+async fn remove_microsoft_personal_command() -> workspace_cloud::Result<()> {
+    let (setup, _) = microsoft_sign_in().await?;
+    workspace_cloud::signin::remove_personal_microsoft(&setup).await?;
+    println!("microsoft_personal=off");
+    Ok(())
+}
+
 /// `workspace-cloud remove-microsoft <firm id>` takes a firm's Microsoft sign-in away, for example when it leaves.
 async fn remove_microsoft_command() -> workspace_cloud::Result<()> {
     let firm = parse_firm_id(std::env::args().nth(2), "workspace-cloud remove-microsoft <firm id>")?;
@@ -266,6 +322,10 @@ async fn run() -> workspace_cloud::Result<()> {
         Some("provision-firm") => return provision_firm().await,
         Some("check-secrets") => return check_secrets().await,
         Some("add-microsoft") => return add_microsoft_command().await,
+        Some("enable-google") => return enable_google_command().await,
+        Some("prune-newcomers") => return prune_newcomers_command().await,
+        Some("add-microsoft-personal") => return add_microsoft_personal_command().await,
+        Some("remove-microsoft-personal") => return remove_microsoft_personal_command().await,
         Some("remove-microsoft") => return remove_microsoft_command().await,
         Some("download-model") => {
             // Fetches the meaning-search model once, so the server and the worker do not both
@@ -294,6 +354,7 @@ async fn run() -> workspace_cloud::Result<()> {
     }
     let secrets = secrets_from_env(settings.allow_insecure, &pool).await?;
     let sign_in_route = sign_in_route(&settings).await;
+    let onboarding_route = onboarding_route(&settings, verifier.clone()).await;
     let app = api::router(AppState {
         verifier,
         jwks: Some(jwks),
@@ -303,6 +364,10 @@ async fn run() -> workspace_cloud::Result<()> {
         embedder: load_embedder(),
     });
     let app = match sign_in_route {
+        Some(route) => app.merge(route),
+        None => app,
+    };
+    let app = match onboarding_route {
         Some(route) => app.merge(route),
         None => app,
     };
@@ -326,6 +391,39 @@ async fn sign_in_route(settings: &Settings) -> Option<axum::Router> {
             None
         }
     }
+}
+
+/// Lets a person with no firm start their own (`POST /v1/onboarding/firm`). It is off unless the server is given
+/// ONBOARDING_DATABASE_URL, the provisioner role's login: the only database login that may create a firm, so
+/// leaving it out keeps this server unable to. It also needs AWS permission to make a firm's key and to attach
+/// a person to a firm in the user pool (infra/service_access.tf).
+async fn onboarding_route(settings: &Settings, verifier: Arc<workspace_cloud::auth::TokenVerifier>) -> Option<axum::Router> {
+    let url = std::env::var("ONBOARDING_DATABASE_URL").ok().filter(|url| !url.trim().is_empty())?;
+    let provisioner = Settings {
+        bind: String::new(),
+        database_url: url,
+        database_ca_file: settings.database_ca_file.clone(),
+        allow_insecure: settings.allow_insecure,
+        issuer: settings.issuer.clone(),
+        audience: settings.audience.clone(),
+    };
+    let pool = match build_pool(&provisioner, 2) {
+        Ok(pool) => pool,
+        Err(error) => {
+            tracing::warn!(%error, "starting a firm from the app is switched off");
+            return None;
+        }
+    };
+    let accounts = match workspace_cloud::signin::AwsSignIn::from_env(&settings.issuer, &settings.audience).await {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            tracing::warn!(%error, "starting a firm from the app is switched off");
+            return None;
+        }
+    };
+    let keys = workspace_cloud::kms::AwsKms::from_env().await;
+    tracing::info!("people can start their own firm from the app");
+    Some(workspace_cloud::onboarding::routes(verifier, Arc::new(accounts), Arc::new(keys), pool))
 }
 
 async fn shutdown() {

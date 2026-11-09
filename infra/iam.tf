@@ -240,6 +240,13 @@ data "aws_iam_policy_document" "provisioner" {
     resources = [aws_cognito_user_pool.main.arn]
   }
 
+  # `workspace-cloud prune-newcomers`: lists accounts that signed up and never made a firm, and deletes them.
+  statement {
+    sid       = "ClearAbandonedSignUps"
+    actions   = ["cognito-idp:ListUsers", "cognito-idp:AdminGetUser", "cognito-idp:AdminDeleteUser"]
+    resources = [aws_cognito_user_pool.main.arn]
+  }
+
   statement {
     sid       = "RecordWhichFirmAProviderBelongsTo"
     actions   = ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:GetParametersByPath"]

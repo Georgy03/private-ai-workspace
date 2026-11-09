@@ -141,7 +141,8 @@ on the app, undoing the earlier steps if a later one fails. Adding a firm change
    an authorized redirect URI. On the consent screen use only the `openid`, `email` and `profile` scopes (these need no
    Google review) and publish the app, or only listed test users can sign in. Keep this app separate from the Drive
    connector's: it must not be able to read files. Put its client ID in `terraform.tfvars` and its secret in
-   `TF_VAR_google_client_secret`, then apply (the secret ends up in the state file, so keep the state encrypted).
+   `TF_VAR_google_client_secret`, then apply (the secret ends up in the state file, so keep the state encrypted). Finally run
+   `backend/scripts/firm.sh enable-google` once: OpenTofu leaves the app's list of providers alone, so this is what allows Google on the app.
 3. *Microsoft.* In the Microsoft Entra admin center, register one application for "Accounts in any organizational
    directory (multitenant)". Add `identity_provider_redirect_uri` as a Web redirect URI. Create a client secret (it
    expires, at most after 24 months: put the date in a calendar). Under Token configuration add the optional claim
@@ -160,6 +161,40 @@ The desktop app's sign-in screen asks for a work email. The server looks up the 
 (`POST /v1/sign-in/route`), finds the firm's Microsoft provider and tells the app which one to open, so nobody
 needs to know a provider name or claim an email domain. An address that was never invited, or whose firm has no
 Microsoft sign-in, gets the same empty answer. The lookup is limited to 60 requests a minute in total.
+
+**Open sign-up (a person starts their own firm).** On the sign-in screen, "Create my firm" signs the person in with
+Google and then calls `POST /v1/onboarding/firm`. The server makes the firm and its own encryption key, attaches the
+person to it in the user pool and makes them its administrator; the app then refreshes their token. The pre sign-up
+function lets a Google address that Google verified, and that nobody has used, in with an account that has no firm:
+that account can do nothing except ask for a firm. A person gets one firm, an invited person cannot make another, and
+the whole server allows 20 new firms a minute. It is **off by default**. To switch it on:
+
+1. Set `self_serve_firms = true` in `terraform.tfvars` and run `./apply-core.sh` (this lets the API's access key make
+   firm keys and attach a person to a firm; read the comment in `service_access.tf` for what that costs).
+2. Give the API service on Railway `ONBOARDING_DATABASE_URL`: the `prism_prov` login (the only database login that may
+   create a firm), the same way `DATABASE_URL` is set.
+
+The first version runs inside the API for simplicity. Once there are paying customers, move it to a small service of
+its own with its own access key, so a taken-over API could not attach anyone to a firm. A person who signs up with
+Google and later is invited to another firm by that same address will not be linked automatically (their Google
+account already exists); an administrator would need to link them by hand. Personal Microsoft accounts
+(`@outlook.com`, `@hotmail.com`, `@live.com` and a few other addresses Microsoft issues) can start a firm too: see
+the next section.
+
+**Clearing out abandoned sign-ups.** Open sign-up leaves an account with no firm behind for anyone who signs in and
+never finishes. `backend/scripts/firm.sh prune-newcomers [--days 30]` lists those older than the given days (at least
+1); add `--delete` to delete them. It only ever considers accounts that signed in through Google or Microsoft and
+belong to no firm, so an invited person, an administrator or anyone attached to a firm is never touched, and it
+checks each account again just before deleting it. It needs your own AWS sign-in (the `ClearAbandonedSignUps` permission
+in `iam.tf`). A deleted person who comes back simply signs up again.
+
+**Personal Microsoft accounts.** They all sign in through one fixed Microsoft address, so one shared provider serves
+everyone: run `backend/scripts/firm.sh add-microsoft-personal` once (it uses the same Microsoft sign-in app, whose
+account type must allow personal accounts: "Any Entra ID Tenant + Personal Microsoft accounts"). Microsoft does not
+say whether a personal account's email is verified, so the sign-up function accepts this provider only for addresses
+Microsoft itself issues, where the address is the account, and refuses any other address. In the app, "Continue with
+Microsoft" tries the person's own firm's Microsoft sign-in first and falls back to this one for such an address.
+`remove-microsoft-personal` turns it off.
 
 **To invite a person** (use their work email; the firm ID comes from `provision-firm`):
 

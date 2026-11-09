@@ -41,6 +41,7 @@ pub fn run() {
             commands::answer_question,
             commands::cloud_status,
             commands::cloud_sign_in,
+            commands::cloud_create_firm,
             commands::cloud_connectors,
             commands::cloud_connect,
             commands::cloud_disconnect,

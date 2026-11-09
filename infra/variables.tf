@@ -85,3 +85,9 @@ variable "google_client_secret" {
   default     = ""
   sensitive   = true
 }
+
+variable "self_serve_firms" {
+  description = "Let a person with no firm start their own from the app (POST /v1/onboarding/firm). Turning it on gives the API's access key the right to make firm keys and to attach a person to a firm in the user pool, so leave it off until you want sign-up open. The server also needs ONBOARDING_DATABASE_URL."
+  type        = bool
+  default     = false
+}

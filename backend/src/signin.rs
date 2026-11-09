@@ -22,6 +22,12 @@ use crate::{Error, Result, auth::TenantId};
 
 /// Where each provider's firm is recorded: `<path><provider name>` holds the firm's ID. The pre sign-up
 /// function (infra/presignup) and its permission in infra/signin.tf use the same path.
+/// The one provider for personal Microsoft accounts (`@outlook.com` and the like). They all sign in through one
+/// fixed Microsoft address, so, unlike work accounts, one provider serves everybody.
+pub const PERSONAL_PROVIDER: &str = "MicrosoftPersonal";
+/// Microsoft's fixed tenant ID for personal accounts: the issuer of every one of their tokens.
+const PERSONAL_ISSUER_TENANT: &str = "9188040d-6c67-4c5b-b112-36a304b66dad";
+
 pub const PARAMETER_PATH: &str = "/prism/signin/microsoft/";
 
 /// The Microsoft sign-in app: one multi-tenant registration shared by every firm. It asks only for the
@@ -85,6 +91,8 @@ pub trait SignInSetup: Send + Sync {
     /// The providers recorded for a firm.
     async fn providers_of(&self, firm: TenantId) -> Result<Vec<String>>;
     async fn create_microsoft_provider(&self, provider: &str, entra_tenant: &str, app: &MicrosoftApp) -> Result<()>;
+    /// The shared provider for personal Microsoft accounts.
+    async fn create_personal_microsoft_provider(&self, app: &MicrosoftApp) -> Result<()>;
     async fn delete_provider(&self, provider: &str) -> Result<()>;
     async fn allow_on_app(&self, provider: &str) -> Result<()>;
     async fn disallow_on_app(&self, provider: &str) -> Result<()>;
@@ -109,6 +117,23 @@ pub async fn add_microsoft(setup: &dyn SignInSetup, firm: TenantId, firm_name: &
         return Err(error);
     }
     Ok(provider)
+}
+
+/// Turns on sign-in with personal Microsoft accounts for everyone. If it cannot be allowed on the app, the provider
+/// is removed again, so nothing is left half made.
+pub async fn add_personal_microsoft(setup: &dyn SignInSetup, app: &MicrosoftApp) -> Result<()> {
+    setup.create_personal_microsoft_provider(app).await?;
+    if let Err(error) = setup.allow_on_app(PERSONAL_PROVIDER).await {
+        let _ = setup.delete_provider(PERSONAL_PROVIDER).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Turns personal Microsoft sign-in off. It stops being offered first, then the provider goes.
+pub async fn remove_personal_microsoft(setup: &dyn SignInSetup) -> Result<()> {
+    setup.disallow_on_app(PERSONAL_PROVIDER).await?;
+    setup.delete_provider(PERSONAL_PROVIDER).await
 }
 
 /// Takes a firm's Microsoft sign-in away and returns the providers removed. The record goes first, so
@@ -147,6 +172,34 @@ impl AwsSignIn {
 
     pub fn new(cognito: cognito::Client, ssm: ssm::Client, pool_id: String, app_client_id: String) -> Self {
         Self { cognito, ssm, pool_id, app_client_id }
+    }
+
+    async fn create_microsoft_oidc(&self, provider: &str, login: &str, issuer: &str, app: &MicrosoftApp) -> Result<()> {
+        let details: HashMap<String, String> = [
+            ("client_id", app.client_id.clone()),
+            ("client_secret", app.client_secret.clone()),
+            ("authorize_scopes", "openid email profile".into()),
+            ("attributes_request_method", "GET".into()),
+            ("oidc_issuer", issuer.to_string()),
+            ("authorize_url", format!("{login}/oauth2/v2.0/authorize")),
+            ("token_url", format!("{login}/oauth2/v2.0/token")),
+            ("attributes_url", "https://graph.microsoft.com/oidc/userinfo".into()),
+            ("jwks_uri", format!("{login}/discovery/v2.0/keys")),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+        self.cognito
+            .create_identity_provider()
+            .user_pool_id(&self.pool_id)
+            .provider_name(provider)
+            .provider_type(cognito::types::IdentityProviderTypeType::Oidc)
+            .set_provider_details(Some(details))
+            .set_attribute_mapping(Some(HashMap::from([("email".to_string(), "email".to_string()), ("username".to_string(), "sub".to_string())])))
+            .send()
+            .await
+            .map_err(|error| failed("could not create the Microsoft provider", cognito::error::DisplayErrorContext(&error)))?;
+        Ok(())
     }
 
     /// The desktop app's client as it is now, and its settings handed back for an update, with the
@@ -253,31 +306,13 @@ impl SignInSetup for AwsSignIn {
 
     async fn create_microsoft_provider(&self, provider: &str, entra_tenant: &str, app: &MicrosoftApp) -> Result<()> {
         let login = format!("https://login.microsoftonline.com/{entra_tenant}");
-        let details: HashMap<String, String> = [
-            ("client_id", app.client_id.clone()),
-            ("client_secret", app.client_secret.clone()),
-            ("authorize_scopes", "openid email profile".into()),
-            ("attributes_request_method", "GET".into()),
-            ("oidc_issuer", format!("{login}/v2.0")),
-            ("authorize_url", format!("{login}/oauth2/v2.0/authorize")),
-            ("token_url", format!("{login}/oauth2/v2.0/token")),
-            ("attributes_url", "https://graph.microsoft.com/oidc/userinfo".into()),
-            ("jwks_uri", format!("{login}/discovery/v2.0/keys")),
-        ]
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
-        self.cognito
-            .create_identity_provider()
-            .user_pool_id(&self.pool_id)
-            .provider_name(provider)
-            .provider_type(cognito::types::IdentityProviderTypeType::Oidc)
-            .set_provider_details(Some(details))
-            .set_attribute_mapping(Some(HashMap::from([("email".to_string(), "email".to_string()), ("username".to_string(), "sub".to_string())])))
-            .send()
-            .await
-            .map_err(|error| failed("could not create the Microsoft provider", cognito::error::DisplayErrorContext(&error)))?;
-        Ok(())
+        self.create_microsoft_oidc(provider, &login, &format!("{login}/v2.0"), app).await
+    }
+
+    async fn create_personal_microsoft_provider(&self, app: &MicrosoftApp) -> Result<()> {
+        // Sign-in goes through the "consumers" address, but the token names Microsoft's fixed personal tenant.
+        let issuer = format!("https://login.microsoftonline.com/{PERSONAL_ISSUER_TENANT}/v2.0");
+        self.create_microsoft_oidc(PERSONAL_PROVIDER, "https://login.microsoftonline.com/consumers", &issuer, app).await
     }
 
     async fn delete_provider(&self, provider: &str) -> Result<()> {
@@ -321,6 +356,92 @@ impl SignInRouting for AwsSignIn {
         match firm {
             Some(id) => Ok(self.providers_of(TenantId(id)).await?.into_iter().next()),
             None => Ok(None),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::onboarding::Accounts for AwsSignIn {
+    async fn has_firm(&self, username: &str) -> Result<bool> {
+        let user = self
+            .cognito
+            .admin_get_user()
+            .user_pool_id(&self.pool_id)
+            .username(username)
+            .send()
+            .await
+            .map_err(|error| failed("could not read the account", cognito::error::DisplayErrorContext(&error)))?;
+        Ok(user.user_attributes().iter().any(|attribute| attribute.name() == "custom:tenant_id" && attribute.value().is_some_and(|value| !value.trim().is_empty())))
+    }
+
+    async fn make_admin_of(&self, username: &str, firm: TenantId) -> Result<()> {
+        let attribute = cognito::types::AttributeType::builder()
+            .name("custom:tenant_id")
+            .value(firm.0.to_string())
+            .build()
+            .map_err(|error| Error::SignIn(error.to_string()))?;
+        self.cognito
+            .admin_update_user_attributes()
+            .user_pool_id(&self.pool_id)
+            .username(username)
+            .user_attributes(attribute)
+            .send()
+            .await
+            .map_err(|error| failed("could not attach the account to its firm", cognito::error::DisplayErrorContext(&error)))?;
+        if let Err(error) = self
+            .cognito
+            .admin_add_user_to_group()
+            .user_pool_id(&self.pool_id)
+            .username(username)
+            .group_name(crate::auth::ADMIN_GROUP)
+            .send()
+            .await
+        {
+            return Err(failed("could not make the account its firm's administrator", cognito::error::DisplayErrorContext(&error)));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl crate::prune::PoolUsers for AwsSignIn {
+    async fn firmless_federated(&self) -> Result<Vec<crate::prune::Newcomer>> {
+        let mut found = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .cognito
+                .list_users()
+                .user_pool_id(&self.pool_id)
+                .limit(60)
+                .set_pagination_token(token.clone())
+                .send()
+                .await
+                .map_err(|error| failed("could not list the accounts", cognito::error::DisplayErrorContext(&error)))?;
+            for user in page.users() {
+                let attribute = |name: &str| user.attributes().iter().find(|a| a.name() == name).and_then(|a| a.value()).map(str::to_string);
+                let firmless = attribute("custom:tenant_id").is_none_or(|value| value.trim().is_empty());
+                let outside = user.user_status() == Some(&cognito::types::UserStatusType::ExternalProvider);
+                if let (true, true, Some(username), Some(created)) = (firmless, outside, user.username(), user.user_create_date()) {
+                    found.push(crate::prune::Newcomer { username: username.to_string(), email: attribute("email").unwrap_or_default(), created: created.secs() });
+                }
+            }
+            token = page.pagination_token().map(str::to_string);
+            if token.is_none() {
+                return Ok(found);
+            }
+        }
+    }
+
+    async fn has_firm(&self, username: &str) -> Result<bool> {
+        crate::onboarding::Accounts::has_firm(self, username).await
+    }
+
+    async fn delete(&self, username: &str) -> Result<()> {
+        match self.cognito.admin_delete_user().user_pool_id(&self.pool_id).username(username).send().await {
+            Ok(_) => Ok(()),
+            Err(error) if error.as_service_error().is_some_and(|e| e.is_user_not_found_exception()) => Ok(()),
+            Err(error) => Err(failed("could not delete the account", cognito::error::DisplayErrorContext(&error))),
         }
     }
 }

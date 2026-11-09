@@ -12,7 +12,7 @@ use uuid::Uuid;
 use workspace_cloud::{
     Error,
     auth::TenantId,
-    signin::{AwsSignIn, MicrosoftApp, SignInSetup, add_microsoft, parameter_name, provider_name, remove_microsoft},
+    signin::{AwsSignIn, MicrosoftApp, PERSONAL_PROVIDER, SignInSetup, add_microsoft, add_personal_microsoft, parameter_name, provider_name, remove_microsoft, remove_personal_microsoft},
 };
 
 const POOL: &str = "us-east-2_TestPool";
@@ -179,4 +179,37 @@ async fn finding_a_firms_providers_reads_every_page_of_the_record() {
     world.lock().unwrap().params.insert(parameter_name("ms-zzz-last"), id.0.to_string());
     assert_eq!(setup.providers_of(id).await.unwrap(), ["ms-zzz-last"]);
     assert!(setup.providers_of(firm()).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn personal_microsoft_is_one_shared_provider_on_the_consumers_address_and_changes_nothing_else() {
+    let (setup, world) = harness().await;
+    let before = world.lock().unwrap().client.clone();
+    add_personal_microsoft(&setup, &app()).await.unwrap();
+    {
+        let w = world.lock().unwrap();
+        let details = &w.providers[PERSONAL_PROVIDER]["ProviderDetails"];
+        // Signing in goes through "consumers"; the token's issuer is Microsoft's fixed personal tenant.
+        assert_eq!(details["authorize_url"], "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize");
+        assert_eq!(details["token_url"], "https://login.microsoftonline.com/consumers/oauth2/v2.0/token");
+        assert_eq!(details["jwks_uri"], "https://login.microsoftonline.com/consumers/discovery/v2.0/keys");
+        assert_eq!(details["oidc_issuer"], "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0");
+        assert_eq!(w.providers[PERSONAL_PROVIDER]["AttributeMapping"], json!({ "email": "email", "username": "sub" }));
+        assert_eq!(w.client["SupportedIdentityProviders"], json!(["COGNITO", "Google", PERSONAL_PROVIDER]));
+        assert_eq!(without_providers(&w.client), without_providers(&before));
+        assert!(w.params.is_empty(), "it belongs to no firm, so nothing is recorded for one");
+    }
+    // Turning it on twice is refused by AWS and changes nothing; turning it off puts the app back.
+    assert!(add_personal_microsoft(&setup, &app()).await.is_err());
+    remove_personal_microsoft(&setup).await.unwrap();
+    assert_eq!(world.lock().unwrap().client, before);
+    assert!(world.lock().unwrap().providers.is_empty());
+}
+
+#[tokio::test]
+async fn a_personal_provider_that_cannot_be_allowed_on_the_app_is_not_left_behind() {
+    let (setup, world) = harness().await;
+    world.lock().unwrap().fail.insert("UpdateUserPoolClient".into());
+    assert!(add_personal_microsoft(&setup, &app()).await.is_err());
+    assert!(world.lock().unwrap().providers.is_empty());
 }

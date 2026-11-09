@@ -4,7 +4,7 @@ import { ZoomMeetings } from "./ZoomMeetings";
 import { ConnectorLogo } from "./ConnectorLogo";
 import { AlertTriangle, Check, LoaderCircle, Lock, Plus, RefreshCw, Search, Trash2, Users, X } from "lucide-react";
 import { SignInDialog } from "./SignInDialog";
-import { cloudConnect, cloudConnectionFiles, cloudConnectors, cloudDisconnect, cloudSetScope, cloudSignIn, cloudSyncNow } from "./api";
+import { cloudConnect, cloudConnectionFiles, cloudConnectors, cloudDisconnect, cloudSetScope, cloudSignIn, cloudCreateFirm, cloudSyncNow } from "./api";
 import type { CloudStatus, Connection, ConnectorInfo, ConnectorsView, NameOnlyFile } from "./types";
 
 /** Connectors on the roadmap. Shown so people can see what is coming; they cannot be connected yet. */
@@ -227,7 +227,7 @@ export function ConnectorsPanel({ cloud, onCloud }: { cloud: CloudStatus; onClou
         <strong>Sign in to manage connectors.</strong>
         <p>Connectors copy files from your firm's accounts into the firm cloud index so they can be searched with your local files.</p>
         <button className="primary" onClick={() => setSigningIn(true)}>Sign in</button>
-        {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignIn={async (choice) => onCloud(await cloudSignIn(choice))} />}
+        {signingIn && <SignInDialog onClose={() => setSigningIn(false)} onSignIn={async (choice) => onCloud(await cloudSignIn(choice))} onCreateFirm={async (name, withProvider) => onCloud(await cloudCreateFirm(name, withProvider))} />}
         {problem && <p className="connector-problem"><AlertTriangle size={14} /> {problem}</p>}
       </div>
     );
