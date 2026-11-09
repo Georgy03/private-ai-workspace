@@ -186,6 +186,27 @@ fn http_client() -> reqwest::Client {
 
 // ---- Token storage: a private file in development builds, the OS credential store otherwise ----
 
+/// Debug builds only: what a token claims, without the token or any address, so a sign-in that "works" but is
+/// refused can be told apart from one that never finished.
+fn describe_token(id_token: &str) -> String {
+    let claims: Option<serde_json::Value> = id_token
+        .split('.')
+        .nth(1)
+        .and_then(|part| URL_SAFE_NO_PAD.decode(part).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let Some(c) = claims else { return "not a readable token".into() };
+    format!(
+        "token_use={} aud_is_client={} has_firm={} groups={} email_verified={} expires_in={}s iss={}",
+        c["token_use"],
+        c["aud"].is_string(),
+        c["custom:tenant_id"].as_str().is_some_and(|v| !v.is_empty()),
+        c["cognito:groups"],
+        c["email_verified"],
+        c["exp"].as_i64().unwrap_or(0) - Utc::now().timestamp(),
+        c["iss"],
+    )
+}
+
 fn load_tokens(dir: &Path) -> Option<Tokens> {
     if cfg!(debug_assertions) {
         let text = std::fs::read_to_string(dir.join(TOKENS_FILE)).ok()?;
@@ -688,6 +709,9 @@ impl Cloud {
                     continue;
                 }
                 401 => {
+                    if cfg!(debug_assertions) {
+                        eprintln!("cloud: the server refused the sign-in token (401) on {path}");
+                    }
                     self.sign_out();
                     return Err(CloudError::SignedOut);
                 }
@@ -1064,6 +1088,11 @@ impl Cloud {
             })?;
         let status = response.status();
         if status.as_u16() == 400 || status.as_u16() == 401 {
+            if cfg!(debug_assertions) {
+                // Cognito's refusal is only a code and a sentence ({"error":"invalid_grant"}), never a token.
+                let body = response.text().await.unwrap_or_default();
+                eprintln!("cloud: the sign-in service refused ({status}): {}", body.chars().take(300).collect::<String>());
+            }
             return Err(CloudError::SignedOut);
         }
         if !status.is_success() {
@@ -1143,9 +1172,46 @@ impl Cloud {
         let name = clean_firm_name(name)?;
         self.sign_in(with, &open).await?;
         self.finish_new_firm(&name).await?;
-        self.sign_in(with, &open).await.map(|_| ()).map_err(|_| {
-            CloudError::Unavailable("your firm was made, but signing in to it did not finish. Use Sign in".into())
+        // Cognito's own browser session (a cookie that lasts about an hour) still points at the account the server
+        // just replaced, and every sign-in through it is refused until it ends. End it first.
+        let finished = async {
+            self.end_browser_session(&open).await?;
+            self.sign_in(with, &open).await
+        };
+        finished.await.map_err(|error| {
+            CloudError::Unavailable(format!(
+                "your firm was made, but signing in to it did not finish ({}). Use Sign in",
+                error.message()
+            ))
         })
+    }
+
+    /// Ends Cognito's session in the person's browser: opens its sign-out page, which sends the browser straight back
+    /// to this machine. Nothing is signed out in the app here; this only stops the browser reusing an old session.
+    async fn end_browser_session(&self, open: impl FnOnce(&str)) -> Result<(), CloudError> {
+        let settings = self.settings();
+        let client = settings
+            .cognito_client_id
+            .clone()
+            .ok_or(CloudError::NotConfigured)?;
+        let base = self.cognito_base(&settings)?;
+        let listener = TcpListener::bind(("127.0.0.1", self.redirect_port))
+            .await
+            .map_err(|_| CloudError::Unavailable("the sign-in port is already in use".into()))?;
+        // The sign-out return address must be one Cognito knows, and the sign-in callback is.
+        let back = format!(
+            "http://127.0.0.1:{}/callback",
+            listener.local_addr().unwrap().port()
+        );
+        let mut url = reqwest::Url::parse(&format!("{base}/logout"))
+            .map_err(|_| CloudError::NotConfigured)?;
+        url.query_pairs_mut()
+            .append_pair("client_id", &client)
+            .append_pair("logout_uri", &back);
+        open(url.as_str());
+        tokio::time::timeout(Duration::from_secs(60), wait_for_return(&listener))
+            .await
+            .map_err(|_| CloudError::Unavailable("signing out of the old browser session took too long".into()))?
     }
 
     /// The part after sign-in, apart so it can be tried without a browser.
@@ -1309,7 +1375,14 @@ impl Cloud {
                     ("code_verifier", &verifier),
                 ],
             )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                // Here a refusal is not "signed out": the browser step worked and the token was then refused.
+                CloudError::SignedOut => CloudError::Unavailable(
+                    "the sign-in service refused to finish the sign-in; try again".into(),
+                ),
+                other => other,
+            })?;
         let id_token = reply["id_token"]
             .as_str()
             .ok_or_else(|| CloudError::Unavailable("the sign-in returned no identity".into()))?
@@ -1319,6 +1392,9 @@ impl Cloud {
             refresh_token: reply["refresh_token"].as_str().map(str::to_string),
             expires_at: Utc::now().timestamp() + reply["expires_in"].as_i64().unwrap_or(3600),
         };
+        if cfg!(debug_assertions) {
+            eprintln!("cloud: signed in; {}", describe_token(&tokens.id_token));
+        }
         save_tokens(&self.dir, &tokens)?;
         *self.tokens.lock().unwrap() = Some(tokens);
         Ok(())
@@ -1421,6 +1497,46 @@ fn html_escape(text: &str) -> String {
 
 /// Waits for the browser to arrive with the right state. Anything else (a favicon request, a
 /// wrong state from some other page) is answered and ignored.
+/// Waits for the browser to come back from Cognito's sign-out page. That return carries nothing, so any request for
+/// the callback path will do; anything else is answered and ignored.
+async fn wait_for_return(listener: &TcpListener) -> Result<(), CloudError> {
+    loop {
+        let (mut socket, _) = listener
+            .accept()
+            .await
+            .map_err(|_| CloudError::Unavailable("the sign-in listener failed".into()))?;
+        let mut buffer = vec![0u8; 4096];
+        let read = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut buffer))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(0);
+        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+        let path = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or("");
+        let back = path == "/callback" || path.starts_with("/callback?");
+        let text = if back {
+            "One moment: finishing your sign-in in the app."
+        } else {
+            "This sign-in link is not valid."
+        };
+        let body = format!("<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;max-width:32rem;margin:4rem auto\"><p>{text}</p>");
+        let status = if back { "200 OK" } else { "404 Not Found" };
+        let reply = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = socket.write_all(reply.as_bytes()).await;
+        let _ = socket.shutdown().await;
+        if back {
+            return Ok(());
+        }
+    }
+}
+
 async fn wait_for_callback(listener: &TcpListener, state: &str) -> Result<String, CloudError> {
     loop {
         let (mut socket, _) = listener
@@ -2603,6 +2719,35 @@ mod tests {
         // The old account was replaced, so its token is gone and the app signs in again to get one with the firm.
         assert!(cloud.tokens.lock().unwrap().is_none());
         assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ending_the_browser_session_opens_cognitos_sign_out_and_waits_for_the_browser_to_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://login.example.com"));
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let tx = StdMutex::new(Some(tx));
+        let waiting = tokio::spawn(async move {
+            cloud
+                .end_browser_session(|url| {
+                    tx.lock().unwrap().take().unwrap().send(url.to_string()).unwrap();
+                })
+                .await
+        });
+        let url = reqwest::Url::parse(&rx.await.unwrap()).unwrap();
+        assert_eq!(url.host_str(), Some("login.example.com"));
+        assert_eq!(url.path(), "/logout");
+        let pairs: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs["client_id"], "client-1");
+        let back = &pairs["logout_uri"];
+        assert!(back.starts_with("http://127.0.0.1:") && back.ends_with("/callback"), "{back}");
+        // A stray request is answered and ignored; the return to the callback ends the wait.
+        let base = back.trim_end_matches("/callback");
+        assert_eq!(reqwest::get(format!("{base}/favicon.ico")).await.unwrap().status(), 404);
+        let page = reqwest::get(back.as_str()).await.unwrap();
+        assert_eq!(page.status(), 200);
+        assert!(page.text().await.unwrap().contains("finishing your sign-in"));
+        waiting.await.unwrap().unwrap();
     }
 
     #[tokio::test]
