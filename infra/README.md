@@ -14,7 +14,7 @@ the first `tofu plan` in a real account will likely need small fixes.
 | `kms.tf` | A platform encryption key and a separate audit-log key, both with rotation. Each firm's own key is made later, at runtime |
 | `storage.tf` | The shared data bucket (private, versioned, TLS only, KMS-encrypted uploads required) and a write-once audit bucket |
 | `database.tf` | Postgres on RDS: private, encrypted, forced TLS, 14-day backups, deletion protection, admin password held by AWS |
-| `auth.tf` | Cognito user pool with required MFA, admin-only user creation, a `custom:tenant_id` attribute that users cannot change, and the `firm_admin` group |
+| `auth.tf` | Cognito user pool with required MFA, admin-only user creation, a `custom:tenant_id` attribute that users cannot change (plus `custom:firm_id`, written only by the server for people who start their own firm), and the `firm_admin` group |
 | `signin.tf`, `presignup/` | Sign in with Google and Microsoft for invited people only: the providers, and the pre sign-up function (Python, with tests) that links each person to their invitation |
 | `iam.tf` | Service roles; the `tenant_access` role that limits a firm's files and keys to one firm per session; the permissions to use firm keys for connector tokens; and the provisioner that makes them |
 | `audit.tf` | CloudTrail with file-level data events, GuardDuty, alerts for medium-or-higher findings and root sign-in, a monthly budget alarm |
@@ -164,7 +164,11 @@ Microsoft sign-in, gets the same empty answer. The lookup is limited to 60 reque
 
 **Open sign-up (a person starts their own firm).** On the sign-in screen, "Create my firm" signs the person in with
 Google and then calls `POST /v1/onboarding/firm`. The server makes the firm and its own encryption key, attaches the
-person to it in the user pool and makes them its administrator; the app then refreshes their token. The pre sign-up
+person to it in the user pool and makes them its administrator; the app then refreshes their token, so there is only
+one browser sign-in. An invited person's firm is `custom:tenant_id`, which Cognito never lets anyone change. A person who
+starts their own firm gets `custom:firm_id` instead, a second attribute that the server's own AWS login can write (the
+desktop app's client cannot, and no sign-in provider maps onto it). The server reads `tenant_id` first, so an invited
+person can never be moved by it. The pre sign-up
 function lets a Google address that Google verified, and that nobody has used, in with an account that has no firm:
 that account can do nothing except ask for a firm. A person gets one firm, an invited person cannot make another, and
 the whole server allows 20 new firms a minute. It is **off by default**. To switch it on:

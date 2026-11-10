@@ -1113,6 +1113,11 @@ impl Cloud {
             .unwrap()
             .clone()
             .ok_or(CloudError::SignedOut)?;
+        self.refresh_from(settings, old).await
+    }
+
+    /// Gets a fresh ID token from these tokens' refresh token, and keeps the result as the app's sign-in.
+    async fn refresh_from(&self, settings: &Settings, old: Tokens) -> Result<String, CloudError> {
         let (Some(refresh), Some(client)) = (
             old.refresh_token.clone(),
             settings.cognito_client_id.clone(),
@@ -1154,14 +1159,13 @@ impl Cloud {
     }
 
     /// Starts a new firm for a person who has none: signs them in with Google (the account becomes theirs), asks the
-    /// server to make the firm with them as its administrator, then signs them in again. The server replaces their
-    /// firm-less account with one that has the firm (the firm can only be given when an account is made), so the
-    /// first sign-in's token is spent; the second is quick because Google already knows them.
+    /// server to make the firm with them as its administrator, and refreshes so their token carries the firm. One
+    /// browser sign-in, start to finish.
     pub async fn create_firm(
         &self,
         name: &str,
         with: &SignInChoice,
-        open: impl Fn(&str),
+        open: impl FnOnce(&str),
     ) -> Result<(), CloudError> {
         // Only the two sign-ins that need no invitation can start a firm.
         if !matches!(with, SignInChoice::Google | SignInChoice::MicrosoftPersonal) {
@@ -1170,53 +1174,22 @@ impl Cloud {
             ));
         }
         let name = clean_firm_name(name)?;
-        // The first sign-in has no firm, so it is never kept as the app's session: everything else in the app would
-        // be refused with it (and would sign the person out). It is used for the one request that makes the firm.
-        let temporary = self.browser_sign_in(with, &open).await?;
+        // The sign-in has no firm yet, so it is not kept as the app's session while the firm is made: the rest of the
+        // app would be refused with it (and would sign the person out). It is used for the one request that makes
+        // the firm, then refreshed into a token that carries the firm.
+        let temporary = self.browser_sign_in(with, open).await?;
         if cfg!(debug_assertions) {
             eprintln!("cloud: signed in to start a firm; {}", describe_token(&temporary.id_token));
         }
         self.finish_new_firm(&name, &temporary.id_token).await?;
-        // Cognito's own browser session (a cookie that lasts about an hour) still points at the account the server
-        // just replaced, and every sign-in through it is refused until it ends. End it first.
-        let finished = async {
-            self.end_browser_session(&open).await?;
-            self.sign_in(with, &open).await
-        };
-        finished.await.map_err(|error| {
-            CloudError::Unavailable(format!(
-                "your firm was made, but signing in to it did not finish ({}). Use Sign in",
-                error.message()
-            ))
-        })
-    }
-
-    /// Ends Cognito's session in the person's browser: opens its sign-out page, which sends the browser straight back
-    /// to this machine. Nothing is signed out in the app here; this only stops the browser reusing an old session.
-    async fn end_browser_session(&self, open: impl FnOnce(&str)) -> Result<(), CloudError> {
         let settings = self.settings();
-        let client = settings
-            .cognito_client_id
-            .clone()
-            .ok_or(CloudError::NotConfigured)?;
-        let base = self.cognito_base(&settings)?;
-        let listener = TcpListener::bind(("127.0.0.1", self.redirect_port))
-            .await
-            .map_err(|_| CloudError::Unavailable("the sign-in port is already in use".into()))?;
-        // The sign-out return address must be one Cognito knows, and the sign-in callback is.
-        let back = format!(
-            "http://127.0.0.1:{}/callback",
-            listener.local_addr().unwrap().port()
-        );
-        let mut url = reqwest::Url::parse(&format!("{base}/logout"))
-            .map_err(|_| CloudError::NotConfigured)?;
-        url.query_pairs_mut()
-            .append_pair("client_id", &client)
-            .append_pair("logout_uri", &back);
-        open(url.as_str());
-        tokio::time::timeout(Duration::from_secs(60), wait_for_return(&listener))
-            .await
-            .map_err(|_| CloudError::Unavailable("signing out of the old browser session took too long".into()))?
+        let token = self.refresh_from(&settings, temporary).await.map_err(|_| {
+            CloudError::Unavailable("your firm was made, but signing in to it did not finish. Use Sign in".into())
+        })?;
+        if cfg!(debug_assertions) {
+            eprintln!("cloud: signed in; {}", describe_token(&token));
+        }
+        Ok(())
     }
 
     /// The part after sign-in, apart so it can be tried without a browser: asks the server to make the firm, with the
@@ -1513,46 +1486,6 @@ fn html_escape(text: &str) -> String {
 
 /// Waits for the browser to arrive with the right state. Anything else (a favicon request, a
 /// wrong state from some other page) is answered and ignored.
-/// Waits for the browser to come back from Cognito's sign-out page. That return carries nothing, so any request for
-/// the callback path will do; anything else is answered and ignored.
-async fn wait_for_return(listener: &TcpListener) -> Result<(), CloudError> {
-    loop {
-        let (mut socket, _) = listener
-            .accept()
-            .await
-            .map_err(|_| CloudError::Unavailable("the sign-in listener failed".into()))?;
-        let mut buffer = vec![0u8; 4096];
-        let read = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut buffer))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or(0);
-        let request = String::from_utf8_lossy(&buffer[..read]).to_string();
-        let path = request
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .unwrap_or("");
-        let back = path == "/callback" || path.starts_with("/callback?");
-        let text = if back {
-            "One moment: finishing your sign-in in the app."
-        } else {
-            "This sign-in link is not valid."
-        };
-        let body = format!("<!doctype html><meta charset=utf-8><body style=\"font-family:system-ui;max-width:32rem;margin:4rem auto\"><p>{text}</p>");
-        let status = if back { "200 OK" } else { "404 Not Found" };
-        let reply = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = socket.write_all(reply.as_bytes()).await;
-        let _ = socket.shutdown().await;
-        if back {
-            return Ok(());
-        }
-    }
-}
-
 async fn wait_for_callback(listener: &TcpListener, state: &str) -> Result<String, CloudError> {
     loop {
         let (mut socket, _) = listener
@@ -2738,32 +2671,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ending_the_browser_session_opens_cognitos_sign_out_and_waits_for_the_browser_to_return() {
+    async fn after_the_firm_is_made_the_temporary_sign_in_is_refreshed_into_the_apps_session() {
+        let (server, seen) = serve(|request| match request.path.as_str() {
+            "/v1/onboarding/firm" => (200, r#"{"firm_id":"x"}"#.into(), 0),
+            "/oauth2/token" => {
+                let form: std::collections::HashMap<String, String> =
+                    reqwest::Url::parse(&format!("http://x/?{}", request.body)).unwrap().query_pairs().into_owned().collect();
+                assert_eq!(form["grant_type"], "refresh_token");
+                assert_eq!(form["refresh_token"], "refresh-from-the-first-sign-in");
+                (200, r#"{"id_token":"token-with-firm","expires_in":3600}"#.into(), 0)
+            }
+            other => panic!("unexpected request {other}"),
+        })
+        .await;
         let dir = tempfile::tempdir().unwrap();
-        let cloud = cloud_for(dir.path(), "https://api.example.com", Some("https://login.example.com"));
-        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-        let tx = StdMutex::new(Some(tx));
-        let waiting = tokio::spawn(async move {
-            cloud
-                .end_browser_session(|url| {
-                    tx.lock().unwrap().take().unwrap().send(url.to_string()).unwrap();
-                })
-                .await
-        });
-        let url = reqwest::Url::parse(&rx.await.unwrap()).unwrap();
-        assert_eq!(url.host_str(), Some("login.example.com"));
-        assert_eq!(url.path(), "/logout");
-        let pairs: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
-        assert_eq!(pairs["client_id"], "client-1");
-        let back = &pairs["logout_uri"];
-        assert!(back.starts_with("http://127.0.0.1:") && back.ends_with("/callback"), "{back}");
-        // A stray request is answered and ignored; the return to the callback ends the wait.
-        let base = back.trim_end_matches("/callback");
-        assert_eq!(reqwest::get(format!("{base}/favicon.ico")).await.unwrap().status(), 404);
-        let page = reqwest::get(back.as_str()).await.unwrap();
-        assert_eq!(page.status(), 200);
-        assert!(page.text().await.unwrap().contains("finishing your sign-in"));
-        waiting.await.unwrap().unwrap();
+        let cloud = cloud_for(dir.path(), &server, Some(&server));
+        let temporary = Tokens {
+            id_token: "no-firm-token".into(),
+            refresh_token: Some("refresh-from-the-first-sign-in".into()),
+            expires_at: Utc::now().timestamp() + 3600,
+        };
+        cloud.finish_new_firm("Sam", &temporary.id_token).await.unwrap();
+        assert!(cloud.tokens.lock().unwrap().is_none(), "nothing is kept until the firm exists");
+        let settings = cloud.settings();
+        cloud.refresh_from(&settings, temporary).await.unwrap();
+        let kept = cloud.tokens.lock().unwrap().clone().unwrap();
+        assert_eq!(kept.id_token, "token-with-firm");
+        assert_eq!(kept.refresh_token.as_deref(), Some("refresh-from-the-first-sign-in"));
+        assert_eq!(cloud.status().state, CloudState::Ready);
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]

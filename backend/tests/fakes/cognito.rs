@@ -42,8 +42,6 @@ pub struct SignInWorld {
     pub page_size: usize,
     /// After the next listing, attach this user to this firm (a person finishing sign-up at that moment).
     pub attach_after_list: Option<(String, String)>,
-    /// Outside identities linked to accounts: ("Google:123", the account's name).
-    pub links: Vec<(String, String)>,
 }
 
 pub type SignIn = Arc<Mutex<SignInWorld>>;
@@ -148,36 +146,17 @@ async fn handle(State(world): State<SignIn>, headers: HeaderMap, body: Bytes) ->
             if !w.users.contains_key(&name) {
                 return error("UserNotFoundException", "User does not exist.");
             }
-            // The firm attribute is immutable in the real pool: it can only be given when an account is made.
-            if request["UserAttributes"].as_array().into_iter().flatten().any(|a| a["Name"] == "custom:tenant_id") {
-                return error("InvalidParameterException", "user.custom:tenant_id: Attribute cannot be updated.");
+            for attribute in request["UserAttributes"].as_array().into_iter().flatten() {
+                match attribute["Name"].as_str() {
+                    // The invited person's firm is immutable in the real pool: it can only be given when an account is made.
+                    Some("custom:tenant_id") => return error("InvalidParameterException", "user.custom:tenant_id: Attribute cannot be updated."),
+                    // The firm of someone who started their own is a separate attribute that can change.
+                    Some("custom:firm_id") => {
+                        w.users.insert(name.clone(), attribute["Value"].as_str().unwrap_or_default().to_string());
+                    }
+                    _ => {}
+                }
             }
-            ok(json!({}))
-        }
-        "AdminCreateUser" => {
-            let name = request["Username"].as_str().unwrap_or_default().to_string();
-            if w.users.contains_key(&name) {
-                return error("UsernameExistsException", "User account already exists");
-            }
-            let firm = request["UserAttributes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|a| a["Name"] == "custom:tenant_id")
-                .and_then(|a| a["Value"].as_str())
-                .unwrap_or_default()
-                .to_string();
-            w.users.insert(name.clone(), firm);
-            w.meta.insert(name, ("FORCE_CHANGE_PASSWORD".into(), 1_900_000_000));
-            ok(json!({ "User": { "Username": request["Username"] } }))
-        }
-        "AdminLinkProviderForUser" => {
-            let destination = request["DestinationUser"]["ProviderAttributeValue"].as_str().unwrap_or_default();
-            if !w.users.contains_key(destination) {
-                return error("UserNotFoundException", "User does not exist.");
-            }
-            let source = format!("{}:{}", request["SourceUser"]["ProviderName"].as_str().unwrap_or_default(), request["SourceUser"]["ProviderAttributeValue"].as_str().unwrap_or_default());
-            w.links.push((source, destination.to_string()));
             ok(json!({}))
         }
         "AdminAddUserToGroup" => {

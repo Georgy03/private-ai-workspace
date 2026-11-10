@@ -48,6 +48,22 @@ resource "aws_cognito_user_pool" "main" {
       max_length = 36
     }
   }
+
+  # The firm of someone who started their own firm from the app. Unlike "tenant_id" this can be changed after the
+  # account exists, which is what lets a newcomer be put in their new firm without signing in a second time. Only the
+  # server's own AWS login can write it (the desktop app's client cannot, and no sign-in provider maps onto it), and
+  # "tenant_id" always wins when both are present, so an invited person can never be moved.
+  schema {
+    name                     = "firm_id"
+    attribute_data_type      = "String"
+    developer_only_attribute = false
+    mutable                  = true
+    required                 = false
+    string_attribute_constraints {
+      min_length = 36
+      max_length = 36
+    }
+  }
 }
 
 # The server treats members of this group as the firm's administrators (backend/src/auth.rs, ADMIN_GROUP):
@@ -93,7 +109,7 @@ resource "aws_cognito_user_pool_client" "desktop" {
 
   # The firm attribute is readable but deliberately absent from write_attributes, so a user
   # cannot change it even if they tamper with the app.
-  read_attributes  = ["email", "email_verified", "custom:tenant_id"]
+  read_attributes  = ["email", "email_verified", "custom:tenant_id", "custom:firm_id"]
   write_attributes = ["email"]
 }
 

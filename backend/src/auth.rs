@@ -54,6 +54,10 @@ struct Claims {
     sub: String,
     #[serde(rename = "custom:tenant_id")]
     tenant_id: Option<String>,
+    /// The firm of someone who started their own firm from the app (the invited have `tenant_id`, which can never
+    /// be changed and so always wins).
+    #[serde(rename = "custom:firm_id")]
+    firm_id: Option<String>,
     #[serde(rename = "cognito:groups", default)]
     groups: Vec<String>,
     token_use: Option<String>,
@@ -61,6 +65,15 @@ struct Claims {
     username: Option<String>,
     email: Option<String>,
     email_verified: Option<serde_json::Value>,
+}
+
+impl Claims {
+    /// The person's firm: the locked `tenant_id` of an invited person if it holds one, otherwise the `firm_id` of
+    /// someone who started their own firm.
+    fn firm(&self) -> Option<Uuid> {
+        let parse = |value: &Option<String>| value.as_deref().and_then(|v| Uuid::parse_str(v).ok());
+        parse(&self.tenant_id).or_else(|| parse(&self.firm_id))
+    }
 }
 
 /// Lower-case, and only when the identity provider verified it. Cognito reports email_verified as a boolean,
@@ -177,11 +190,7 @@ impl TokenVerifier {
     /// reported as such, so the caller can say so instead of making a second firm.
     pub fn verify_unassigned(&self, token: &str) -> Result<Unassigned> {
         let claims = self.decode_id(token)?;
-        if claims
-            .tenant_id
-            .as_deref()
-            .is_some_and(|value| Uuid::parse_str(value).is_ok())
-        {
+        if claims.firm().is_some() {
             return Ok(Unassigned::AlreadyInFirm);
         }
         let username = claims
@@ -196,11 +205,7 @@ impl TokenVerifier {
 
     pub fn verify(&self, token: &str) -> Result<Principal> {
         let claims = self.decode_id(token)?;
-        let tenant = claims
-            .tenant_id
-            .as_deref()
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .ok_or_else(|| Error::Token("token carries no valid firm".into()))?;
+        let tenant = claims.firm().ok_or_else(|| Error::Token("token carries no valid firm".into()))?;
         if claims.sub.is_empty() {
             return Err(Error::Token("token carries no user".into()));
         }
@@ -258,6 +263,27 @@ mod tests {
     }
 
     const TENANT: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn someone_who_started_their_own_firm_is_in_it_and_an_invited_persons_locked_firm_always_wins() {
+        const OWN: &str = "22222222-2222-4222-8222-222222222222";
+        let with = |tenant: Option<&str>, firm: Option<&str>| {
+            let mut c = claims(tenant);
+            if let Some(firm) = firm {
+                c["custom:firm_id"] = json!(firm);
+            }
+            verifier().verify(&sign(&c, PRIVATE))
+        };
+        assert_eq!(with(None, Some(OWN)).unwrap().tenant, TenantId(Uuid::parse_str(OWN).unwrap()));
+        // Both present: the locked one wins, so an invited person can never be moved by the changeable one.
+        assert_eq!(with(Some(TENANT), Some(OWN)).unwrap().tenant, TenantId(Uuid::parse_str(TENANT).unwrap()));
+        // Nothing usable in either: no firm.
+        assert!(with(None, Some("not-a-uuid")).is_err());
+        assert!(with(None, None).is_err());
+        // A token with only the changeable one counts as already in a firm when asked to start another.
+        let own = sign(&{ let mut c = claims(None); c["custom:firm_id"] = json!(OWN); c }, PRIVATE);
+        assert!(matches!(verifier().verify_unassigned(&own).unwrap(), Unassigned::AlreadyInFirm));
+    }
 
     #[test]
     fn a_valid_token_yields_the_firm_user_and_groups() {
