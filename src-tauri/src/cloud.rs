@@ -1170,8 +1170,13 @@ impl Cloud {
             ));
         }
         let name = clean_firm_name(name)?;
-        self.sign_in(with, &open).await?;
-        self.finish_new_firm(&name).await?;
+        // The first sign-in has no firm, so it is never kept as the app's session: everything else in the app would
+        // be refused with it (and would sign the person out). It is used for the one request that makes the firm.
+        let temporary = self.browser_sign_in(with, &open).await?;
+        if cfg!(debug_assertions) {
+            eprintln!("cloud: signed in to start a firm; {}", describe_token(&temporary.id_token));
+        }
+        self.finish_new_firm(&name, &temporary.id_token).await?;
         // Cognito's own browser session (a cookie that lasts about an hour) still points at the account the server
         // just replaced, and every sign-in through it is refused until it ends. End it first.
         let finished = async {
@@ -1214,43 +1219,44 @@ impl Cloud {
             .map_err(|_| CloudError::Unavailable("signing out of the old browser session took too long".into()))?
     }
 
-    /// The part after sign-in, apart so it can be tried without a browser.
-    async fn finish_new_firm(&self, name: &str) -> Result<(), CloudError> {
-        let mut sent = false;
-        let raw = self
-            .authed(
-                reqwest::Method::POST,
-                "/v1/onboarding/firm",
-                Some(&serde_json::json!({ "name": name })),
-                MANAGE_TIMEOUT,
-                false,
-                &mut sent,
-            )
-            .await;
-        let failure = match raw {
-            Ok(raw) if raw.status == 200 => {
-                // The account the token belonged to has been replaced by the firm's own, so it is spent.
-                self.sign_out();
-                return Ok(());
-            }
-            // Already in a firm: the sign-in is good, so the person stays signed in.
-            Ok(raw) if raw.status == 409 => {
-                return Err(CloudError::Unavailable(
-                    "this Google account already belongs to a firm, or its firm is being made. Use Sign in instead".into(),
-                ));
-            }
-            Ok(raw) if raw.status == 429 => CloudError::Unavailable(
+    /// The part after sign-in, apart so it can be tried without a browser: asks the server to make the firm, with the
+    /// temporary sign-in's token. Nothing is kept either way; the person signs in to the firm afterwards.
+    async fn finish_new_firm(&self, name: &str, token: &str) -> Result<(), CloudError> {
+        let settings = self.settings();
+        let base = settings
+            .api_base
+            .as_deref()
+            .ok_or(CloudError::NotConfigured)?;
+        let url = format!("{}/v1/onboarding/firm", check_base(base, cfg!(debug_assertions))?);
+        let response = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .timeout(MANAGE_TIMEOUT)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .map_err(|error| {
+                CloudError::Unavailable(if error.is_timeout() {
+                    "it took too long to answer".into()
+                } else {
+                    "it could not be reached".into()
+                })
+            })?;
+        match response.status().as_u16() {
+            200 => Ok(()),
+            409 => Err(CloudError::Unavailable(
+                "this account already belongs to a firm, or its firm is being made. Use Sign in instead".into(),
+            )),
+            429 => Err(CloudError::Unavailable(
                 "too many firms are being started just now; wait a minute and try again".into(),
-            ),
-            Ok(raw) if raw.status == 404 => CloudError::Unavailable(
+            )),
+            404 => Err(CloudError::Unavailable(
                 "starting a firm from the app is not switched on for this server".into(),
-            ),
-            Ok(_) => CloudError::Unavailable("your firm could not be made; try again".into()),
-            Err(error) => error,
-        };
-        // A sign-in with no firm can do nothing else, so do not leave the person half signed in.
-        self.sign_out();
-        Err(failure)
+            )),
+            401 => Err(CloudError::Unavailable("the server did not accept the sign-in; try again".into())),
+            _ => Err(CloudError::Unavailable("your firm could not be made; try again".into())),
+        }
     }
 
     /// Asks the firm's server which Microsoft sign-in belongs to this email. No one is signed in yet, so the
@@ -1308,6 +1314,21 @@ impl Cloud {
         choice: &SignInChoice,
         open: impl FnOnce(&str),
     ) -> Result<(), CloudError> {
+        let tokens = self.browser_sign_in(choice, open).await?;
+        if cfg!(debug_assertions) {
+            eprintln!("cloud: signed in; {}", describe_token(&tokens.id_token));
+        }
+        save_tokens(&self.dir, &tokens)?;
+        *self.tokens.lock().unwrap() = Some(tokens);
+        Ok(())
+    }
+
+    /// The browser part of signing in, returning the tokens without keeping them.
+    async fn browser_sign_in(
+        &self,
+        choice: &SignInChoice,
+        open: impl FnOnce(&str),
+    ) -> Result<Tokens, CloudError> {
         let mut routing = choice.fixed_routing();
         let settings = self.settings();
         let client = settings
@@ -1392,12 +1413,7 @@ impl Cloud {
             refresh_token: reply["refresh_token"].as_str().map(str::to_string),
             expires_at: Utc::now().timestamp() + reply["expires_in"].as_i64().unwrap_or(3600),
         };
-        if cfg!(debug_assertions) {
-            eprintln!("cloud: signed in; {}", describe_token(&tokens.id_token));
-        }
-        save_tokens(&self.dir, &tokens)?;
-        *self.tokens.lock().unwrap() = Some(tokens);
-        Ok(())
+        Ok(tokens)
     }
 }
 
@@ -2702,7 +2718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn starting_a_firm_posts_the_name_then_drops_the_spent_token() {
+    async fn starting_a_firm_posts_the_name_with_the_temporary_token_and_keeps_nothing() {
         let (server, seen) = serve(|request| match request.path.as_str() {
             "/v1/onboarding/firm" => {
                 assert!(request.auth.as_deref().is_some_and(|a| a.contains("no-firm-token")));
@@ -2714,10 +2730,10 @@ mod tests {
         .await;
         let dir = tempfile::tempdir().unwrap();
         let cloud = cloud_for(dir.path(), &server, Some(&server));
-        sign_in_tokens(&cloud, "no-firm-token", Some("refresh-1"), 3600);
-        cloud.finish_new_firm("Sam's Tax Practice").await.unwrap();
-        // The old account was replaced, so its token is gone and the app signs in again to get one with the firm.
+        cloud.finish_new_firm("Sam's Tax Practice", "no-firm-token").await.unwrap();
+        // The firm-less sign-in never becomes the app's session, so nothing else can be refused with it.
         assert!(cloud.tokens.lock().unwrap().is_none());
+        assert_eq!(cloud.status().state, CloudState::SignedOut);
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
@@ -2751,20 +2767,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_firm_says_why_and_only_the_already_in_a_firm_case_keeps_the_person_signed_in() {
-        for (status, words, stays_signed_in) in [
-            (409, "already belongs to a firm", true),
-            (429, "wait a minute", false),
-            (404, "not switched on", false),
-            (503, "try again", false),
+    async fn a_refused_firm_says_why_and_never_touches_an_existing_sign_in() {
+        for (status, words) in [
+            (409, "already belongs to a firm"),
+            (429, "wait a minute"),
+            (404, "not switched on"),
+            (401, "did not accept"),
+            (503, "try again"),
         ] {
             let (server, _) = serve(move |_| (status, "x".into(), 0)).await;
             let dir = tempfile::tempdir().unwrap();
             let cloud = cloud_for(dir.path(), &server, Some(&server));
-            sign_in_tokens(&cloud, "no-firm-token", Some("refresh-1"), 3600);
-            let message = cloud.finish_new_firm("Sam").await.unwrap_err().message();
+            sign_in_tokens(&cloud, "someone-elses-session", Some("refresh-1"), 3600);
+            let message = cloud.finish_new_firm("Sam", "no-firm-token").await.unwrap_err().message();
             assert!(message.contains(words), "{status}: {message}");
-            assert_eq!(cloud.tokens.lock().unwrap().is_some(), stays_signed_in, "{status}");
+            assert_eq!(cloud.tokens.lock().unwrap().as_ref().unwrap().id_token, "someone-elses-session", "{status}");
         }
     }
 
